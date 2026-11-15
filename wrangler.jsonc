@@ -18,5 +18,12 @@
     }
   ],
 
+  // stündlich: fällige Geburtstags-Erinnerungen verschicken (ab der eingestellten Uhrzeit, deutsche Zeit)
+  "triggers": { "crons": ["0 * * * *"] },
+
+  // E-Mail-Erinnerungen (optional) – erst einschalten, wenn eine eigene Domain bei Cloudflare eingerichtet ist:
+  // "send_email": [{ "name": "EMAIL" }],
+  // "vars": { "MAIL_FROM": "geburtstage@eure-domain.de" },
+
   "observability": { "enabled": true }
 }

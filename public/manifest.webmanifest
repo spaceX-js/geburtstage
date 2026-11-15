@@ -1,6 +1,6 @@
 {
-  "name": "Geschenke",
-  "short_name": "Geschenke",
+  "name": "Geburtstage",
+  "short_name": "Geburtstage",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f4f0ec",

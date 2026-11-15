@@ -1,8 +1,9 @@
-// Geschenke – Cloudflare Worker
-// Bindungen: DB (D1-Datenbank „geschenke-db“) und ASSETS (Ordner public/).
+// Geburtstage – Cloudflare Worker (Repo „geschenke“)
+// Bindungen: DB (D1-Datenbank „geschenke-db“), ASSETS (Ordner public/), optional EMAIL + MAIL_FROM für E-Mail-Erinnerungen.
 // Das Passwort liegt nur als Hash in der Datenbank (Tabelle settings).
 // Beim allerersten Aufruf (noch kein Passwort gespeichert) legt man das gemeinsame Passwort fest.
-import { HOLIDAY_KEYS } from "../public/occasions.js";
+import { HOLIDAY_KEYS, todayIn } from "../public/occasions.js";
+import { reminderConfig, checkDays, EMAIL_RE, ensureVapid, deliver, emailReady, buildEmail, sendMail, runReminders, buildIcs, TZ } from "./notify.js";
 
 const COOKIE = "gs_session";
 const ITER = 100000;
@@ -10,6 +11,7 @@ const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const OCC_RE = /^(geburtstag|weihnachten|nikolaus|ostern|valentinstag|muttertag|vatertag|x:[A-Za-z0-9_-]{1,40})$/;
 const STATUS = ["idee", "gekauft", "verpackt", "ueberreicht", "nichts"];
 const PEOPLE_DEFAULT = ["Jonas", "Clara"];
+const REMIND = ["", "tag", "aus"];
 
 export default {
   async fetch(request, env, ctx) {
@@ -18,10 +20,18 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      // Öffentlich: Icon und Manifest (für „Zum Home-Bildschirm“)
+      // Öffentlich: Icon und Manifest (für „Zum Home-Bildschirm“) und Service Worker (für Push-Nachrichten)
       if (path === "/icon.png" || path === "/icon-512.png" || path === "/manifest.webmanifest") return env.ASSETS.fetch(request);
+      if (path === "/sw.js") return withHeaders(await env.ASSETS.fetch(request), { "Cache-Control": "no-cache", "Service-Worker-Allowed": "/" });
 
       const settings = await getSettings(env);
+      // Kalender-Abo: ohne Anmeldung, aber nur mit dem geheimen Link
+      const cal = path.match(/^\/kalender\/([a-f0-9]{32})\.ics$/);
+      if (cal) {
+        if (!settings.cal_token || !safeEqual(cal[1], settings.cal_token)) return text("Unbekannter Kalender-Link.", 404);
+        const { persons } = await loadState(env);
+        return new Response(buildIcs(persons, todayIn(TZ)), { headers: { "Content-Type": "text/calendar; charset=utf-8", "Cache-Control": "no-store", ...SEC } });
+      }
       if (path === "/login" && request.method === "POST") return settings.pw_hash ? login(request, env, settings) : setup(request, env, settings);
       if (path === "/logout") return new Response(null, { status: 302, headers: { Location: "/", "Set-Cookie": `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax` } });
 
@@ -41,22 +51,113 @@ export default {
     } catch (e) {
       return json({ error: "Serverfehler: " + (e && e.message ? e.message : e) }, 500);
     }
+  },
+
+  // Läuft stündlich (wrangler.jsonc → triggers.crons): fällige Erinnerungen verschicken
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runReminders(env, new Date(), loadState));
   }
 };
+
+export async function loadState(env) {
+  const [p, i, g] = await env.DB.batch([
+    env.DB.prepare("SELECT * FROM persons ORDER BY name COLLATE NOCASE"),
+    env.DB.prepare("SELECT * FROM ideas ORDER BY created_at DESC"),
+    env.DB.prepare("SELECT * FROM gifts ORDER BY year DESC, created_at DESC")
+  ]);
+  return { persons: p.results.map(personOut), ideas: i.results.map(ideaOut), gifts: g.results.map(giftOut) };
+}
+function settingsOut(settings, env) {
+  const c = reminderConfig(settings);
+  return { remind_days: c.days, remind_hour: c.hour, remind_holidays: c.holidays, emails: c.emails, email_ready: emailReady(env) };
+}
 
 /* ---------- API ---------- */
 async function api(request, env, settings, url) {
   const path = url.pathname, method = request.method;
+  // Adresse der App merken – Erinnerungen brauchen sie für Links und als Absender der Push-Nachrichten
+  if (settings.origin !== url.origin && url.protocol === "https:") { await setSetting(env, "origin", url.origin).run(); settings.origin = url.origin; }
 
   if (path === "/api/state" && method === "GET") {
     const rev = Number(settings.rev || 0);
     if (url.searchParams.get("rev") === String(rev)) return json({ rev, same: true });
-    const [p, i, g] = await env.DB.batch([
-      env.DB.prepare("SELECT * FROM persons ORDER BY name COLLATE NOCASE"),
-      env.DB.prepare("SELECT * FROM ideas ORDER BY created_at DESC"),
-      env.DB.prepare("SELECT * FROM gifts ORDER BY year DESC, created_at DESC")
-    ]);
-    return json({ rev, people: people(settings), persons: p.results.map(personOut), ideas: i.results.map(ideaOut), gifts: g.results.map(giftOut) });
+    const st = await loadState(env);
+    return json({ rev, people: people(settings), settings: settingsOut(settings, env), ...st });
+  }
+
+  if (path === "/api/settings" && method === "POST") {
+    const b = await readJson(request);
+    if (!b || typeof b !== "object") return json({ error: "Ungültige Anfrage." }, 400);
+    const ops = [];
+    if (b.remind_days !== undefined) {
+      const d = checkDays(b.remind_days);
+      if (!d) return json({ error: "Ungültiger Vorlauf (0 bis 90 Tage, höchstens 6)." }, 400);
+      ops.push(setSetting(env, "remind_days", JSON.stringify(d)));
+    }
+    if (b.remind_hour !== undefined) {
+      const h = Number(b.remind_hour);
+      if (!Number.isInteger(h) || h < 0 || h > 23) return json({ error: "Ungültige Uhrzeit." }, 400);
+      ops.push(setSetting(env, "remind_hour", String(h)));
+    }
+    if (b.remind_holidays !== undefined) ops.push(setSetting(env, "remind_holidays", b.remind_holidays ? "1" : "0"));
+    if (b.email !== undefined) {
+      const e = b.email || {};
+      if (!people(settings).includes(e.person)) return json({ error: "Ungültige Person." }, 400);
+      const addr = String(e.address || "").trim();
+      if (addr && (addr.length > 200 || !EMAIL_RE.test(addr))) return json({ error: "Die E-Mail-Adresse sieht nicht richtig aus." }, 400);
+      const emails = reminderConfig(settings).emails;
+      if (addr) emails[e.person] = addr; else delete emails[e.person];
+      ops.push(setSetting(env, "emails", JSON.stringify(emails)));
+    }
+    if (!ops.length) return json({ error: "Nichts zu ändern." }, 400);
+    const res = await env.DB.batch([...ops, bumpRev(env)]);
+    return json({ ok: true, rev: revOf(res[res.length - 1]), settings: settingsOut(await getSettings(env), env) });
+  }
+
+  if (path === "/api/calendar" && method === "GET") {
+    let t = settings.cal_token;
+    if (!t) { t = randomHex(16); await env.DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('cal_token', ?)").bind(t).run(); t = (await getSettings(env)).cal_token; }
+    return json({ url: url.origin + "/kalender/" + t + ".ics" });
+  }
+  if (path === "/api/calendar/new" && method === "POST") {
+    const t = randomHex(16);
+    await setSetting(env, "cal_token", t).run();
+    return json({ url: url.origin + "/kalender/" + t + ".ics" });
+  }
+
+  if (path === "/api/push/key" && method === "GET") {
+    const v = await ensureVapid(env, settings);
+    return json({ key: v.publicKey });
+  }
+  if (path === "/api/push/subscribe" && method === "POST") {
+    const b = await readJson(request);
+    const sub = checkSub(b);
+    if (!sub || !people(settings).includes(b.person)) return json({ error: "Ungültige Anmeldung für Benachrichtigungen." }, 400);
+    await env.DB.prepare("INSERT INTO push_subs (endpoint, p256dh, auth, person, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, person = excluded.person")
+      .bind(sub.endpoint, sub.p256dh, sub.auth, b.person, new Date().toISOString()).run();
+    return json({ ok: true });
+  }
+  if (path === "/api/push/unsubscribe" && method === "POST") {
+    const b = await readJson(request);
+    if (!b || typeof b.endpoint !== "string") return json({ error: "Ungültige Anfrage." }, 400);
+    await env.DB.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(b.endpoint).run();
+    return json({ ok: true });
+  }
+  if (path === "/api/push/test" && method === "POST") {
+    const b = await readJson(request);
+    const row = b && typeof b.endpoint === "string" ? await env.DB.prepare("SELECT endpoint, p256dh, auth, person FROM push_subs WHERE endpoint = ?").bind(b.endpoint).first() : null;
+    if (!row) return json({ error: "Dieses Gerät ist nicht für Benachrichtigungen angemeldet." }, 400);
+    const status = await deliver(env, [row], { title: "🎂 Erinnerungen sind an", body: "So sieht es aus, wenn bald jemand Geburtstag hat.", tag: "gb-test", url: "/" }, url.origin);
+    return status[0] >= 200 && status[0] < 300 ? json({ ok: true }) : json({ error: "Der Push-Dienst hat abgelehnt (" + status[0] + ")." }, 502);
+  }
+  if (path === "/api/email/test" && method === "POST") {
+    const b = await readJson(request);
+    const addr = b && reminderConfig(settings).emails[b.person];
+    if (!emailReady(env)) return json({ error: "E-Mail ist noch nicht eingerichtet." }, 400);
+    if (!addr) return json({ error: "Für " + (b && b.person || "diese Person") + " ist keine E-Mail-Adresse gespeichert." }, 400);
+    try { await sendMail(env, addr, buildEmail([{ title: "🎂 Erinnerungen per E-Mail sind an", body: "So sieht es aus, wenn bald jemand Geburtstag hat." }], url.origin)); }
+    catch (e) { return json({ error: "Senden hat nicht geklappt: " + (e && e.message ? e.message : e) + " (Ist die Adresse bei Cloudflare bestätigt?)" }, 502); }
+    return json({ ok: true });
   }
 
   if (path === "/api/person" && method === "POST") {
@@ -64,13 +165,13 @@ async function api(request, env, settings, url) {
     if (!p) return json({ error: "Ungültige Angaben zur Person." }, 400);
     const now = new Date().toISOString();
     const res = await env.DB.batch([
-      env.DB.prepare(`INSERT INTO persons (id, name, relation, bday_day, bday_month, bday_year, holidays, extra, interests, dislikes, notes, budget_min, budget_max, responsible, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      env.DB.prepare(`INSERT INTO persons (id, name, relation, bday_day, bday_month, bday_year, holidays, extra, interests, dislikes, notes, budget_min, budget_max, responsible, remind, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, relation = excluded.relation, bday_day = excluded.bday_day, bday_month = excluded.bday_month,
           bday_year = excluded.bday_year, holidays = excluded.holidays, extra = excluded.extra, interests = excluded.interests, dislikes = excluded.dislikes,
-          notes = excluded.notes, budget_min = excluded.budget_min, budget_max = excluded.budget_max, responsible = excluded.responsible, updated_at = excluded.updated_at`)
+          notes = excluded.notes, budget_min = excluded.budget_min, budget_max = excluded.budget_max, responsible = excluded.responsible, remind = excluded.remind, updated_at = excluded.updated_at`)
         .bind(p.id, p.name, p.relation, p.bday_day, p.bday_month, p.bday_year, p.holidays.join("|"), JSON.stringify(p.extra), p.interests.join("|"), p.dislikes, p.notes,
-          p.budget_min, p.budget_max, p.responsible, now, now),
+          p.budget_min, p.budget_max, p.responsible, p.remind, now, now),
       bumpRev(env)
     ]);
     return json({ ok: true, rev: revOf(res[1]) });
@@ -142,7 +243,7 @@ function parseExtra(v) { try { const a = JSON.parse(v || "[]"); return Array.isA
 function personOut(r) {
   return { id: r.id, name: r.name, relation: r.relation || "", bday_day: r.bday_day ?? null, bday_month: r.bday_month ?? null, bday_year: r.bday_year ?? null,
     holidays: split(r.holidays), extra: parseExtra(r.extra), interests: split(r.interests), dislikes: r.dislikes || "", notes: r.notes || "",
-    budget_min: r.budget_min ?? null, budget_max: r.budget_max ?? null, responsible: r.responsible || "", created_at: r.created_at, updated_at: r.updated_at };
+    budget_min: r.budget_min ?? null, budget_max: r.budget_max ?? null, responsible: r.responsible || "", remind: r.remind || "", created_at: r.created_at, updated_at: r.updated_at };
 }
 function ideaOut(r) { return { id: r.id, person_id: r.person_id, text: r.text, link: r.link || "", price: r.price ?? null, added_by: r.added_by || "", created_at: r.created_at }; }
 function giftOut(r) {
@@ -197,7 +298,7 @@ export function checkPerson(b, names = PEOPLE_DEFAULT) {
   return {
     id: b.id, name, relation: oneLine(b.relation, 40), bday_day: day, bday_month: month, bday_year: year, holidays, extra, interests,
     dislikes: clean(b.dislikes, 1000), notes: clean(b.notes, 3000), budget_min: bmin, budget_max: bmax,
-    responsible: names.includes(b.responsible) ? b.responsible : ""
+    responsible: names.includes(b.responsible) ? b.responsible : "", remind: REMIND.includes(b.remind) ? b.remind : ""
   };
 }
 
@@ -223,6 +324,14 @@ export function checkGift(b, names = PEOPLE_DEFAULT) {
   const rating = intOrNull(b.rating, 0, 3) || 0;
   return { id: b.id, person_id: b.person_id, occasion: b.occasion, year, title, price, status, rating, note: clean(b.note, 1000),
     who: names.includes(b.who) ? b.who : "", created_at: isoOrNull(b.created_at) };
+}
+export function checkSub(b) {
+  if (!b || typeof b.endpoint !== "string" || !b.keys) return null;
+  let u; try { u = new URL(b.endpoint); } catch (e) { return null; }
+  if (u.protocol !== "https:" || b.endpoint.length > 1000) return null;
+  const k = /^[A-Za-z0-9_-]+={0,2}$/;
+  if (typeof b.keys.p256dh !== "string" || typeof b.keys.auth !== "string" || !k.test(b.keys.p256dh) || !k.test(b.keys.auth) || b.keys.p256dh.length > 200 || b.keys.auth.length > 100) return null;
+  return { endpoint: b.endpoint, p256dh: b.keys.p256dh, auth: b.keys.auth };
 }
 // Nur echte Web-Adressen (http/https) zulassen
 export function cleanLink(v) {
@@ -327,9 +436,9 @@ function loginPage(fehler, first) {
   return `<!DOCTYPE html><html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Geschenke"><meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-title" content="Geburtstage"><meta name="robots" content="noindex, nofollow">
 <link rel="apple-touch-icon" href="/icon.png"><link rel="icon" href="/icon.png"><link rel="manifest" href="/manifest.webmanifest">
-<title>Geschenke – Anmelden</title>
+<title>Geburtstage – Anmelden</title>
 <style>
 :root{--bg:#f4f0ec;--card:#fff;--ink:#1f1b18;--mute:#72675f;--line:#e8e0d8;--acc:#b4493a;--acc-ink:#fff;--bad:#b3261e}
 @media (prefers-color-scheme: dark){:root{--bg:#161312;--card:#211c1a;--ink:#f3ede8;--mute:#a89d95;--line:#3a322e;--acc:#f0927f;--acc-ink:#2a120d;--bad:#f28b82}}
@@ -341,6 +450,6 @@ input:focus{outline:2px solid var(--acc);outline-offset:-1px}
 button{width:100%;min-height:50px;border:0;border-radius:13px;background:var(--acc);color:var(--acc-ink);font:600 17px -apple-system,sans-serif}
 .err{color:var(--bad);font-size:15px;margin:0 0 12px}
 </style></head><body><main>
-<img src="/icon.png" alt=""><h1>Geschenke</h1>
+<img src="/icon.png" alt=""><h1>Geburtstage</h1>
 ${form}</main></body></html>`;
 }

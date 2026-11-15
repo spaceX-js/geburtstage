@@ -1,8 +1,8 @@
-// Geschenke – Oberfläche
-// Zeigt die nächsten Anlässe, die Personen mit Ideen und Geschenk-Historie und speichert alles über /api/… in der Datenbank.
+// Geburtstage – Oberfläche
+// Zeigt die nächsten Geburtstage, alle Personen und (als Zusatz) Geschenk-Ideen und -Historie; speichert alles über /api/… in der Datenbank.
 import * as O from "/occasions.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const CACHE_KEY = "geschenke.v1";
 const POLL_MS = 5000;
 const STATUS = [
@@ -13,7 +13,7 @@ const RATINGS = [[1, "😐 Naja"], [2, "🙂 Gut"], [3, "🤩 Volltreffer"]];
 const RELATIONS = ["Familie", "Freunde", "Partner/in", "Kollegen", "Nachbarn"];
 
 const S = { loaded: false, online: true, rev: null, persons: [], ideas: [], gifts: [], people: ["Jonas", "Clara"], me: "",
-  view: "upcoming", pid: null, filter: "alle", q: "", pending: 0, scroll: {} };
+  view: "upcoming", pid: null, filter: "alle", q: "", pending: 0, scroll: {}, settings: null, pushOn: false, pushHintOff: false };
 
 /* ---------- Kleine Helfer ---------- */
 const $ = id => document.getElementById(id);
@@ -54,12 +54,12 @@ function toast(msg, undo) {
 function loadLocal() {
   try {
     const o = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-    if (o) { S.persons = o.persons || []; S.ideas = o.ideas || []; S.gifts = o.gifts || []; S.me = o.me || ""; S.filter = o.filter || "alle";
+    if (o) { S.persons = o.persons || []; S.ideas = o.ideas || []; S.gifts = o.gifts || []; S.me = o.me || ""; S.filter = o.filter || "alle"; S.settings = o.settings || null; S.pushHintOff = !!o.pushHintOff;
       if (Array.isArray(o.people) && o.people.length) S.people = o.people; if (S.persons.length) S.loaded = true; }
   } catch (e) {}
 }
 function saveLocal() {
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ persons: S.persons, ideas: S.ideas, gifts: S.gifts, people: S.people, me: S.me, filter: S.filter })); } catch (e) {}
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ persons: S.persons, ideas: S.ideas, gifts: S.gifts, people: S.people, me: S.me, filter: S.filter, settings: S.settings, pushHintOff: S.pushHintOff })); } catch (e) {}
 }
 
 /* ---------- Server ---------- */
@@ -81,6 +81,7 @@ async function refresh(force) {
     if (d.same) { S.rev = d.rev; return; }
     S.rev = d.rev; S.persons = d.persons || []; S.ideas = d.ideas || []; S.gifts = d.gifts || []; S.loaded = true;
     if (Array.isArray(d.people) && d.people.length) S.people = d.people;
+    if (d.settings) S.settings = d.settings;
     saveLocal();
     if (!$("modal").innerHTML) render();
   } catch (e) { if (!S.loaded) { S.loaded = true; render(); } }
@@ -129,7 +130,7 @@ function responsibleFor(o) {
   if (gs.length) return gs[0].who;
   const p = person(o.personId); return p ? p.responsible : "";
 }
-function upcomingList(days = 366) {
+function upcomingList(days = 365) {
   let list = O.upcoming(S.persons, today(), days);
   if (S.filter === "meine" && S.me) list = list.filter(o => { const r = responsibleFor(o); return !r || r === S.me; });
   return list;
@@ -148,10 +149,10 @@ function renderHead() {
       '<div class="title" style="margin-bottom:0"><h1>' + esc(p ? p.name : "") + net + "</h1></div>";
     return;
   }
-  $("head").innerHTML = '<div class="title"><h1>Geschenke' + net + '</h1><button class="iconbtn" data-act="menu" aria-label="Einstellungen">' + ICON_GEAR + "</button></div>" +
-    '<div class="seg"><button data-act="view" data-v="upcoming" class="' + (S.view === "upcoming" ? "on" : "") + '">Demnächst</button>' +
-    '<button data-act="view" data-v="persons" class="' + (S.view === "persons" ? "on" : "") + '">Personen' + (S.persons.length ? " (" + S.persons.length + ")" : "") + "</button></div>" +
-    (S.view === "persons" ? '<input class="searchbox" id="q" type="search" placeholder="Suchen …" value="' + esc(S.q) + '" autocomplete="off">' : "");
+  const tab = (v, l) => '<button data-act="view" data-v="' + v + '" class="' + (S.view === v ? "on" : "") + '">' + l + "</button>";
+  $("head").innerHTML = '<div class="title"><h1>Geburtstage' + net + '</h1><button class="iconbtn" data-act="menu" aria-label="Einstellungen">' + ICON_GEAR + "</button></div>" +
+    '<div class="seg">' + tab("upcoming", "Demnächst") + tab("all", "Alle" + (S.persons.length ? " (" + S.persons.length + ")" : "")) + tab("gifts", "🎁 Geschenke") + "</div>" +
+    (S.view === "all" ? '<input class="searchbox" id="q" type="search" placeholder="Suchen …" value="' + esc(S.q) + '" autocomplete="off">' : "");
   const q = $("q"); if (q) q.oninput = () => { S.q = q.value; renderBody(); };
 }
 
@@ -159,31 +160,113 @@ function renderHead() {
 function render() { renderHead(); renderBody(); }
 function renderBody() {
   if (!S.loaded) return;
-  $("fab").innerHTML = S.view === "persons" || (S.view === "upcoming" && S.persons.length) ? '<button class="fab" data-act="new-person">+ Person</button>' : "";
+  $("fab").innerHTML = (S.view === "upcoming" || S.view === "all") && S.persons.length ? '<button class="fab" data-act="new-person">+ Person</button>' : "";
   if (S.view === "person") return renderPerson();
-  if (S.view === "persons") return renderPersons();
+  if (S.view === "all") return renderAll();
+  if (S.view === "gifts") return renderGifts();
   renderUpcoming();
 }
 
 function whoBox() {
   if (S.me) return "";
-  return '<div class="whobox"><b>Wem gehört dieses Handy?</b><div class="small">Damit „Meine“ Anlässe und „von …“ stimmen.</div><div class="chips">' +
+  return '<div class="whobox"><b>Wem gehört dieses Handy?</b><div class="small">Damit Erinnerungen und „von …“ stimmen.</div><div class="chips">' +
     S.people.map(p => '<button data-act="me" data-p="' + esc(p) + '">' + esc(p) + "</button>").join("") + "</div></div>";
 }
+// Hinweis, solange auf diesem Handy keine Erinnerungen ankommen
+function pushHint() {
+  if (!S.me || S.pushOn || S.pushHintOff || !S.persons.length) return "";
+  return '<div class="hint"><span>🔔 Erinnerungen auf diesem Handy einschalten?</span><button class="btn sm" data-act="menu">Einrichten</button><button class="x" data-act="hint-off" aria-label="Ausblenden">✕</button></div>';
+}
+const birthdayOcc = o => !O.HOLIDAY_KEYS.includes(o.key);
+// Kleiner Geschenk-Hinweis an einer Zeile – nur wenn schon etwas geplant ist
+function giftMark(o) {
+  const st = stateOf(o.personId, o.key, o.year);
+  if (st.key === "none") return "";
+  return ' <span class="pill s-' + st.key + '">🎁 ' + esc(st.label) + "</span>";
+}
+function emptyStart() {
+  return whoBox() + '<div class="empty" style="padding-top:50px">🎂<br><b>Noch keine Geburtstage</b><br>Tragt Freunde und Familie ein –<br>die App erinnert euch rechtzeitig.<br>' +
+    '<button class="btn" data-act="new-person">Ersten Geburtstag eintragen</button></div>';
+}
 
+// Demnächst: Geburtstage und eigene Termine der nächsten 12 Monate
 function renderUpcoming() {
-  if (!S.persons.length) {
-    $("app").innerHTML = whoBox() + '<div class="empty" style="padding-top:50px">🎁<br><b>Noch keine Personen</b><br>Legt Freunde und Familie mit Geburtstag an –<br>die App zeigt dann, was als Nächstes ansteht.<br>' +
-      '<button class="btn" data-act="new-person">Erste Person anlegen</button></div>';
-    return;
+  if (!S.persons.length) { $("app").innerHTML = emptyStart(); return; }
+  const list = O.upcoming(S.persons, today(), 365).filter(birthdayOcc);
+  let h = whoBox() + pushHint();
+  const todays = list.filter(o => o.inDays === 0);
+  if (todays.length) {
+    h += '<div class="sec"><b>Heute 🎉</b></div>' + todays.map(o => {
+      const p = person(o.personId);
+      const t = o.key === "geburtstag" ? (o.age ? esc(p.name) + " wird heute " + o.age + "!" : esc(p.name) + " hat heute Geburtstag!") : esc(O.occTitle(o)) + " von " + esc(p.name);
+      return '<button class="today" data-act="person" data-pid="' + esc(p.id) + '"><span class="big">' + (o.key === "geburtstag" ? "🎂" : "⭐") + "</span><span><b>" + t + "</b>" +
+        '<small>Gratulieren nicht vergessen' + giftMark(o) + "</small></span></button>";
+    }).join("");
   }
+  const rest = list.filter(o => o.inDays > 0);
+  if (!list.length) h += '<div class="empty">Noch kein Geburtstag eingetragen.<br>Tippe auf eine Person unter „Alle“ und ergänze das Datum.</div>';
+  const y = thisYear();
+  let month = "";
+  for (const o of rest) {
+    const ym = o.date.slice(0, 7);
+    if (ym !== month) {
+      if (month) h += "</div>";
+      month = ym; const { y: yy, m } = O.parseIso(o.date);
+      h += '<div class="sec"><b>' + O.MONTHS[m - 1] + (yy !== y ? " " + yy : "") + '</b></div><div class="list">';
+    }
+    h += bdayRow(o);
+  }
+  if (month) h += "</div>";
+  $("app").innerHTML = h;
+}
+function bdayRow(o) {
+  const p = person(o.personId);
+  const { d } = O.parseIso(o.date);
+  const round = o.round ? '<span class="pill round">' + (o.key === "geburtstag" ? "rund" : "Jubiläum") + "</span>" : "";
+  const what = o.key === "geburtstag" ? (o.age ? "wird " + o.age : "Geburtstag") : esc(O.occTitle(o));
+  return '<button class="row" data-act="person" data-pid="' + esc(o.personId) + '">' +
+    '<div class="date' + (o.inDays <= 7 ? " soon" : "") + '"><b>' + d + "</b><small>" + O.WEEKDAYS[O.weekday(o.date)] + "</small></div>" +
+    '<div class="main"><div class="n">' + esc(p.name) + round + '</div><div class="d">' + what + " · " + O.fmtIn(o.inDays) + giftMark(o) + "</div></div>" +
+    '<span class="chev">›</span></button>';
+}
+
+// Alle: nach Geburtsmonat sortiert (Januar bis Dezember), Personen ohne Geburtstag am Ende
+function renderAll() {
+  if (!S.persons.length) { $("app").innerHTML = emptyStart(); return; }
+  const q = S.q.trim().toLowerCase();
+  const list = S.persons.filter(p => !q || p.name.toLowerCase().includes(q) || (p.relation || "").toLowerCase().includes(q));
+  if (!list.length) { $("app").innerHTML = '<div class="empty">Niemand gefunden.</div>'; return; }
+  const t = today();
+  const next = new Map(O.upcoming(list, t, 365).filter(o => o.key === "geburtstag").map(o => [o.personId, o]));
+  const withB = list.filter(p => p.bday_day).sort((a, b) => a.bday_month - b.bday_month || a.bday_day - b.bday_day || a.name.localeCompare(b.name, "de"));
+  const without = list.filter(p => !p.bday_day);
+  let h = "", month = 0;
+  for (const p of withB) {
+    if (p.bday_month !== month) { if (month) h += "</div>"; month = p.bday_month; h += '<div class="sec"><b>' + O.MONTHS[month - 1] + '</b></div><div class="list">'; }
+    const o = next.get(p.id);
+    const d = [];
+    if (p.relation) d.push(esc(p.relation));
+    if (o) d.push((o.age ? "wird " + o.age + " " : "") + O.fmtIn(o.inDays));
+    h += '<button class="row" data-act="person" data-pid="' + esc(p.id) + '"><div class="date"><b>' + p.bday_day + "</b><small>" + O.MONTHS_SHORT[p.bday_month - 1].replace(".", "") + "</small></div>" +
+      '<div class="main"><div class="n">' + esc(p.name) + (p.remind === "aus" ? ' <span class="small">🔕</span>' : "") + '</div><div class="d">' + d.join(" · ") + '</div></div><span class="chev">›</span></button>';
+  }
+  if (month) h += "</div>";
+  if (without.length) h += '<div class="sec"><b>Ohne Geburtstag</b></div><div class="list">' + without.map(p =>
+    '<button class="row" data-act="person" data-pid="' + esc(p.id) + '"><div class="avatar">' + esc(initials(p.name)) + '</div><div class="main"><div class="n">' + esc(p.name) +
+    '</div><div class="d">' + (p.relation ? esc(p.relation) + " · " : "") + 'Datum fehlt</div></div><span class="chev">›</span></button>').join("") + "</div>";
+  $("app").innerHTML = h;
+}
+
+// Geschenke: alle Anlässe inkl. Feiertage mit Stand der Geschenke
+function renderGifts() {
+  if (!S.persons.length) { $("app").innerHTML = emptyStart(); return; }
   const list = upcomingList();
   const open30 = list.filter(o => o.inDays <= 30 && stateOf(o.personId, o.key, o.year).key === "none").length;
-  let h = whoBox();
+  let h = '<div class="small" style="margin:12px 4px 0">Hier plant ihr Geschenke – für Geburtstage und, wenn bei einer Person eingeschaltet, für Weihnachten & Co.</div>';
   if (S.me) h += '<div class="seg" style="margin-top:12px"><button data-act="filter" data-f="alle" class="' + (S.filter !== "meine" ? "on" : "") + '">Alle</button>' +
-    '<button data-act="filter" data-f="meine" class="' + (S.filter === "meine" ? "on" : "") + '">Meine (' + esc(S.me) + ")</button></div>";
+    '<button data-act="filter" data-f="meine" class="' + (S.filter === "meine" ? "on" : "") + '">Kümmere ich mich (' + esc(S.me) + ")</button></div>";
   if (open30) h += '<div class="alert">' + (open30 === 1 ? "1 Anlass" : open30 + " Anlässe") + " in den nächsten 30 Tagen ohne Geschenk.</div>";
-  if (!list.length) h += '<div class="empty">In den nächsten 12 Monaten steht nichts an.' + (S.filter === "meine" ? "<br>(Filter „Meine“ ist an.)" : "") + "</div>";
+  if (!list.length) h += '<div class="empty">In den nächsten 12 Monaten steht nichts an.' + (S.filter === "meine" ? "<br>(Filter ist an.)" : "") + "</div>";
   const y = thisYear();
   let month = "";
   for (const o of list) {
@@ -198,6 +281,7 @@ function renderUpcoming() {
   if (month) h += "</div>";
   $("app").innerHTML = h;
 }
+
 function occRow(o, showName = true) {
   const p = person(o.personId);
   const st = stateOf(o.personId, o.key, o.year);
@@ -211,50 +295,44 @@ function occRow(o, showName = true) {
     '<span class="chev">›</span></button>';
 }
 
-function personSub(p) {
-  const parts = [];
-  if (p.relation) parts.push(esc(p.relation));
-  if (p.bday_day) {
-    const age = O.ageOn(p, today());
-    parts.push("🎂 " + O.fmtDayMonth(p.bday_day, p.bday_month) + (age !== null ? " (" + age + ")" : ""));
-  } else parts.push("kein Geburtstag eingetragen");
-  return parts.join(" · ");
-}
-function renderPersons() {
-  const q = S.q.trim().toLowerCase();
-  const list = S.persons.filter(p => !q || p.name.toLowerCase().includes(q) || (p.relation || "").toLowerCase().includes(q) || (p.interests || []).some(i => i.toLowerCase().includes(q)));
-  if (!S.persons.length) { $("app").innerHTML = '<div class="empty" style="padding-top:40px">Noch keine Personen.<br><button class="btn" data-act="new-person">Erste Person anlegen</button></div>'; return; }
-  if (!list.length) { $("app").innerHTML = '<div class="empty">Niemand gefunden.</div>'; return; }
-  $("app").innerHTML = '<div class="list" style="margin-top:14px">' + list.map(p =>
-    '<button class="row" data-act="person" data-pid="' + esc(p.id) + '"><div class="avatar">' + esc(initials(p.name)) + '</div><div class="main"><div class="n">' + esc(p.name) +
-    '</div><div class="d">' + personSub(p) + '</div></div><span class="chev">›</span></button>').join("") + "</div>";
-}
-
+const REMIND_OPTS = [["", "Standard"], ["tag", "Nur am Tag selbst"], ["aus", "Aus"]];
 function renderPerson() {
   const p = person(S.pid);
-  if (!p) { S.view = "persons"; return render(); }
+  if (!p) { S.view = S.back || "upcoming"; return render(); }
   const t = today();
-  const occ = O.upcoming([p], t, 366);
+  const all = O.upcoming([p], t, 365);
+  const bdays = all.filter(birthdayOcc);
+  const nb = bdays.find(o => o.key === "geburtstag");
   const ideas = S.ideas.filter(i => i.person_id === p.id);
   const gifts = S.gifts.filter(g => g.person_id === p.id).sort((a, b) => b.year - a.year || (b.created_at || "").localeCompare(a.created_at || ""));
   let h = "";
-  // Steckbrief
+
+  // Geburtstag groß
   const age = O.ageOn(p, t);
-  const rows = [];
-  rows.push(["Geburtstag", p.bday_day ? O.fmtDayMonth(p.bday_day, p.bday_month) + (p.bday_year ? " " + p.bday_year : "") + (age !== null ? " · " + age + " Jahre" : "") : "–"]);
-  if (p.relation) rows.push(["Beziehung", esc(p.relation)]);
-  rows.push(["Budget", budgetText(p) || "–"]);
-  rows.push(["Kümmert sich", whoText(p.responsible)]);
-  const extras = (p.holidays || []).map(k => occLabel(p, k)).concat((p.extra || []).map(x => x.label + " (" + x.d + "." + x.m + ".)"));
-  rows.push(["Weitere Anlässe", extras.length ? esc(extras.join(", ")) : "–"]);
-  h += '<div class="card" style="margin-top:12px">' + rows.map(([k, v]) => '<div class="kv"><span>' + k + "</span><b>" + v + "</b></div>").join("") + "</div>";
+  if (p.bday_day) {
+    h += '<div class="hero"><div class="big">🎂</div><div><b>' + O.fmtDayMonth(p.bday_day, p.bday_month) + (p.bday_year ? " " + p.bday_year : "") + "</b>" +
+      '<span class="hs">' + (nb ? (nb.inDays === 0 ? (nb.age ? "Wird heute " + nb.age + " 🎉" : "Hat heute Geburtstag 🎉") : (nb.age ? "Wird " + nb.age + " " : "Geburtstag ") + O.fmtIn(nb.inDays) + " (" + O.fmtDate(nb.date, { weekday: true }) + ")") : "") +
+      (age !== null && nb && nb.inDays !== 0 ? " · jetzt " + age : "") + (nb && nb.round ? ' <span class="pill round">rund</span>' : "") + "</span></div></div>";
+  } else {
+    h += '<div class="hero"><div class="big">🎂</div><div><b>Kein Geburtstag eingetragen</b><span class="hs"><button class="linkbtn" style="padding:0" data-act="edit-person">Datum ergänzen</button></span></div></div>';
+  }
+  // weitere Termine
+  const extras = bdays.filter(o => o.key !== "geburtstag");
+  if (extras.length) h += '<div class="list" style="margin-bottom:12px">' + extras.map(o => '<div class="row" style="cursor:default"><div class="date"><b>' + O.parseIso(o.date).d + "</b><small>" +
+    O.MONTHS_SHORT[O.parseIso(o.date).m - 1].replace(".", "") + '</small></div><div class="main"><div class="n">' + esc(O.occTitle(o)) + (o.round ? ' <span class="pill round">Jubiläum</span>' : "") +
+    '</div><div class="d">' + O.fmtIn(o.inDays) + "</div></div></div>").join("") + "</div>";
+  if (p.relation) h += '<div class="small" style="margin:-4px 4px 12px">' + esc(p.relation) + "</div>";
 
-  // Nächste Anlässe
-  h += '<div class="sec"><b>Nächste Anlässe</b></div>';
-  h += occ.length ? '<div class="list">' + occ.slice(0, 6).map(o => occRow(o, false)).join("") + "</div>"
-    : '<div class="card small">Kein Anlass eingetragen. Tippe oben auf den Stift, um einen Geburtstag oder Feiertage hinzuzufügen.</div>';
+  // Erinnerungen
+  h += '<div class="card"><div class="flab">Erinnerungen für ' + esc(p.name.split(" ")[0]) + '</div>' + chipRow("p_remind", REMIND_OPTS, p.remind || "") +
+    '<div class="small" style="margin-top:8px">' + remindText(p.remind) + "</div></div>";
 
-  // Ideen-Notizbuch
+  // Geschenke (Zusatz)
+  h += '<div class="gifthead">🎁 Geschenke</div>';
+  const giftOcc = all.slice(0, 4);
+  h += '<div class="sec" style="margin-top:8px"><b>Nächste Anlässe</b></div>';
+  h += giftOcc.length ? '<div class="list">' + giftOcc.map(o => occRow(o, false)).join("") + "</div>" : '<div class="card small">Kein Anlass eingetragen.</div>';
+
   h += '<div class="sec"><b>Ideen-Notizbuch</b><span class="small">' + (ideas.length || "") + "</span></div>";
   h += '<form class="add" id="ideaform"><input id="ideatext" placeholder="Idee notieren …" maxlength="300" autocomplete="off"><button type="submit" aria-label="Hinzufügen">+</button></form>';
   if (ideas.length) h += '<div class="list ideas">' + ideas.map(i => {
@@ -267,8 +345,7 @@ function renderPerson() {
   }).join("") + "</div>";
   else h += '<div class="small" style="margin:0 4px">Wenn ' + esc(p.name.split(" ")[0]) + " unterm Jahr etwas erwähnt: hier notieren.</div>";
 
-  // Geschenke
-  h += '<div class="sec"><b>Geschenke</b><button class="linkbtn" data-act="past-gift">+ Früheres eintragen</button></div>';
+  h += '<div class="sec"><b>Bisherige Geschenke</b><button class="linkbtn" data-act="past-gift">+ Eintragen</button></div>';
   if (!gifts.length) h += '<div class="card small">Noch keine Geschenke eingetragen. Trage auch frühere ein – so wiederholt sich nichts.</div>';
   let yr = null;
   for (const g of gifts) {
@@ -279,22 +356,38 @@ function renderPerson() {
   }
   if (yr !== null) h += "</div>";
 
-  // Was wir wissen
   h += '<div class="sec"><b>Was wir wissen</b><button class="linkbtn" data-act="edit-person">Bearbeiten</button></div><div class="card">';
+  const rows = [];
+  if (budgetText(p)) rows.push('<div class="kv"><span>Budget</span><b>' + budgetText(p) + "</b></div>");
+  if (p.responsible) rows.push('<div class="kv"><span>Kümmert sich</span><b>' + esc(p.responsible) + "</b></div>");
+  if ((p.holidays || []).length) rows.push('<div class="kv"><span>Auch schenken an</span><b>' + esc(p.holidays.map(k => occLabel(p, k)).join(", ")) + "</b></div>");
   const know = [];
+  if (rows.length) know.push(rows.join(""));
   if ((p.interests || []).length) know.push('<div class="lab">Interessen</div><div class="tags">' + p.interests.map(i => '<span class="tag">' + esc(i) + "</span>").join("") + "</div>");
   if (p.dislikes) know.push('<div class="lab">Mag nicht / hat schon</div><div class="txt">' + esc(p.dislikes) + "</div>");
   if (p.notes) know.push('<div class="lab">Notizen</div><div class="txt">' + esc(p.notes) + "</div>");
-  h += know.length ? know.join("") : '<div class="small">Interessen, Größen, Wünsche – je mehr hier steht, desto besser werden später die Geschenkvorschläge.</div>';
+  h += know.length ? know.join("") : '<div class="small">Budget, Interessen, Größen, Wünsche – hilft beim Schenken. Alles freiwillig.</div>';
   h += "</div>";
   $("app").innerHTML = h;
 
+  singleChips("p_remind", k => { savePerson({ ...p, remind: k }); renderPerson(); toast(k === "aus" ? "Keine Erinnerungen für " + p.name : "Gespeichert"); });
   $("ideaform").onsubmit = e => {
     e.preventDefault();
     const v = $("ideatext").value.trim(); if (!v) return;
     saveIdea({ id: uid("i"), person_id: p.id, text: v.slice(0, 300), link: "", price: null, added_by: S.me, created_at: nowIso() });
     renderPerson(); $("ideatext").focus(); toast("Idee notiert");
   };
+}
+function remindText(mode) {
+  const cfg = S.settings || {};
+  const days = (cfg.remind_days || [30, 15, 7, 0]);
+  if (mode === "aus") return "Für diese Person kommen keine Erinnerungen.";
+  if (mode === "tag") return "Nur am Tag selbst um " + (cfg.remind_hour ?? 9) + " Uhr.";
+  return "Wie in den Einstellungen: " + daysText(days) + ", jeweils um " + (cfg.remind_hour ?? 9) + " Uhr.";
+}
+function daysText(days) {
+  const parts = days.slice().sort((a, b) => b - a).map(d => d === 0 ? "am Tag selbst" : d === 1 ? "1 Tag vorher" : d + " Tage vorher");
+  return parts.length > 1 ? parts.slice(0, -1).join(", ") + " und " + parts[parts.length - 1] : (parts[0] || "nie");
 }
 
 /* ---------- Dialoge ---------- */
@@ -316,46 +409,49 @@ const peopleOpts = () => [["", "Beide"]].concat(S.people.map(p => [p, p]));
 function openPersonForm(id) {
   const old = id ? person(id) : null;
   const p = old ? JSON.parse(JSON.stringify(old)) : { id: uid("p"), name: "", relation: "", bday_day: null, bday_month: null, bday_year: null, holidays: [], extra: [],
-    interests: [], dislikes: "", notes: "", budget_min: null, budget_max: null, responsible: "" };
+    interests: [], dislikes: "", notes: "", budget_min: null, budget_max: null, responsible: "", remind: "" };
+  const hasGiftInfo = p.budget_min != null || p.budget_max != null || p.responsible || (p.holidays || []).length || (p.interests || []).length || p.dislikes || p.notes;
   let extra = (p.extra || []).map(x => ({ ...x }));
   const dayOpts = sel => '<option value="">Tag</option>' + Array.from({ length: 31 }, (_, i) => '<option' + (sel === i + 1 ? " selected" : "") + ">" + (i + 1) + "</option>").join("");
   const monOpts = sel => '<option value="">Monat</option>' + O.MONTHS.map((m, i) => '<option value="' + (i + 1) + '"' + (sel === i + 1 ? " selected" : "") + ">" + m + "</option>").join("");
   const m = sheet(
-    "<h3>" + (old ? "Person bearbeiten" : "Neue Person") + '</h3><div class="sub">Nur der Name ist Pflicht.</div>' +
+    "<h3>" + (old ? "Person bearbeiten" : "Neuer Geburtstag") + '</h3><div class="sub">Nur der Name ist Pflicht.</div>' +
     '<label class="f"><span>Name</span><input id="f_name" maxlength="80" value="' + esc(p.name) + '" autocomplete="off"></label>' +
-    '<label class="f"><span>Beziehung</span><input id="f_rel" list="rels" maxlength="40" value="' + esc(p.relation) + '" placeholder="z. B. Familie, Freunde"><datalist id="rels">' +
-    RELATIONS.map(r => '<option value="' + r + '">').join("") + "</datalist></label>" +
     '<div class="flab">Geburtstag (Jahr freiwillig – dann zeigt die App das Alter)</div><div class="three" style="margin-bottom:12px">' +
     '<select id="f_d">' + dayOpts(p.bday_day) + '</select><select id="f_m">' + monOpts(p.bday_month) + "</select>" +
     '<input id="f_y" inputmode="numeric" maxlength="4" placeholder="Jahr" value="' + esc(p.bday_year || "") + '"></div>' +
+    '<label class="f"><span>Beziehung</span><input id="f_rel" list="rels" maxlength="40" value="' + esc(p.relation) + '" placeholder="z. B. Familie, Freunde"><datalist id="rels">' +
+    RELATIONS.map(r => '<option value="' + r + '">').join("") + "</datalist></label>" +
+    '<div class="flab">Weitere Termine (Hochzeitstag, Namenstag …)</div><div id="f_extra"></div>' +
+    '<button type="button" class="linkbtn" id="f_addx">+ Termin hinzufügen</button>' +
+    '<div class="flab" style="margin-top:12px">Erinnerungen</div>' + chipRow("f_remind", REMIND_OPTS, p.remind || "") +
+    '<details class="more-sec"' + (hasGiftInfo ? " open" : "") + '><summary>🎁 Für Geschenke (optional)</summary>' +
     '<div class="flab">Budget in Euro</div><div class="two" style="margin-bottom:12px"><input id="f_bmin" inputmode="numeric" placeholder="von" value="' + esc(p.budget_min ?? "") + '">' +
     '<input id="f_bmax" inputmode="numeric" placeholder="bis" value="' + esc(p.budget_max ?? "") + '"></div>' +
-    '<div class="flab">Wer kümmert sich normalerweise?</div>' + chipRow("f_resp", peopleOpts(), p.responsible || "") +
+    '<div class="flab">Wer kümmert sich normalerweise ums Geschenk?</div>' + chipRow("f_resp", peopleOpts(), p.responsible || "") +
     '<div class="flab" style="margin-top:14px">Auch an diesen Tagen schenken</div><div class="chips" id="f_hol">' +
     O.HOLIDAYS.map(h => '<button type="button" data-k="' + h.key + '" class="' + ((p.holidays || []).includes(h.key) ? "on" : "") + '">' + h.label + "</button>").join("") + "</div>" +
-    '<div class="flab" style="margin-top:14px">Eigene Termine (Hochzeitstag, Namenstag …)</div><div id="f_extra"></div>' +
-    '<button type="button" class="linkbtn" id="f_addx">+ Termin hinzufügen</button>' +
-    '<div class="hr"></div>' +
-    '<label class="f"><span>Interessen (mit Komma trennen)</span><input id="f_int" value="' + esc((p.interests || []).join(", ")) + '" placeholder="z. B. Kochen, Wandern, Krimis"></label>' +
+    '<label class="f" style="margin-top:14px"><span>Interessen (mit Komma trennen)</span><input id="f_int" value="' + esc((p.interests || []).join(", ")) + '" placeholder="z. B. Kochen, Wandern, Krimis"></label>' +
     '<label class="f"><span>Mag nicht / hat schon</span><textarea id="f_dis" maxlength="1000">' + esc(p.dislikes) + "</textarea></label>" +
     '<label class="f"><span>Notizen (Größen, Wünsche, Lieblingsfarbe …)</span><textarea id="f_notes" maxlength="3000">' + esc(p.notes) + "</textarea></label>" +
+    "</details>" +
     '<div class="acts"><button class="btn ghost" id="f_cancel">Abbrechen</button><button class="btn" id="f_save">Speichern</button></div>' +
     (old ? '<button class="btn danger block" id="f_del" style="margin-top:14px">Person löschen</button>' : "")
   );
-  singleChips("f_resp");
+  singleChips("f_resp"); singleChips("f_remind");
   $("f_hol").onclick = e => { const b = e.target.closest("button"); if (b) b.classList.toggle("on"); };
   function syncExtra() {
     extra = extra.map((x, i) => ({ id: x.id, label: ($("x_l" + i) || {}).value || "", d: Number(($("x_d" + i) || {}).value) || null, m: Number(($("x_m" + i) || {}).value) || null,
       y: numOrNull(($("x_y" + i) || {}).value) }));
   }
   function drawExtra() {
-    $("f_extra").innerHTML = extra.map((x, i) => '<div class="xrow"><input id="x_l' + i + '" placeholder="Name" maxlength="40" value="' + esc(x.label) + '">' +
+    $("f_extra").innerHTML = extra.map((x, i) => '<div class="xrow"><input id="x_l' + i + '" placeholder="z. B. Hochzeitstag" maxlength="40" value="' + esc(x.label) + '">' +
       '<select id="x_d' + i + '">' + dayOpts(x.d) + '</select><select id="x_m' + i + '">' + monOpts(x.m) + "</select>" +
       '<input id="x_y' + i + '" inputmode="numeric" maxlength="4" placeholder="Jahr" value="' + esc(x.y || "") + '"><button type="button" data-rm="' + i + '" aria-label="Entfernen">✕</button></div>').join("");
   }
   drawExtra();
   $("f_extra").onclick = e => { const b = e.target.closest("[data-rm]"); if (!b) return; syncExtra(); extra.splice(Number(b.dataset.rm), 1); drawExtra(); };
-  $("f_addx").onclick = () => { syncExtra(); extra.push({ id: uid("x"), label: extra.length ? "" : "Hochzeitstag", d: null, m: null, y: null }); drawExtra(); };
+  $("f_addx").onclick = () => { syncExtra(); extra.push({ id: uid("x"), label: "", d: null, m: null, y: null }); drawExtra(); };
   $("f_cancel").onclick = closeModal;
   if (!old) setTimeout(() => $("f_name").focus(), 50);
   if (old) $("f_del").onclick = e => {
@@ -385,7 +481,7 @@ function openPersonForm(id) {
     const out = { ...p, name: name.slice(0, 80), relation: $("f_rel").value.trim().slice(0, 40), bday_day: d, bday_month: mo, bday_year: y,
       holidays: [...$("f_hol").querySelectorAll("button.on")].map(b => b.dataset.k), extra: ex,
       interests: $("f_int").value.split(/[,;\n]/).map(s => s.trim()).filter(Boolean).slice(0, 30),
-      dislikes: $("f_dis").value.trim(), notes: $("f_notes").value.trim(), budget_min: bmin, budget_max: bmax, responsible: chipValue("f_resp") };
+      dislikes: $("f_dis").value.trim(), notes: $("f_notes").value.trim(), budget_min: bmin, budget_max: bmax, responsible: chipValue("f_resp"), remind: chipValue("f_remind") };
     savePerson(out);
     $("modal").innerHTML = "";
     if (!old) return goPerson(out.id, "angelegt");
@@ -495,7 +591,7 @@ function openGiftForm(id, defaults, after) {
 function openIdea(id) {
   const i = S.ideas.find(x => x.id === id); if (!i) return;
   const p = person(i.person_id);
-  const occ = p ? O.upcoming([p], today(), 366) : [];
+  const occ = p ? O.upcoming([p], today(), 365) : [];
   const m = sheet(
     '<h3>Idee</h3><div class="sub">für ' + esc(p ? p.name : "") + (i.added_by ? " · notiert von " + esc(i.added_by) : "") + "</div>" +
     '<label class="f"><span>Idee</span><textarea id="i_text" maxlength="300">' + esc(i.text) + "</textarea></label>" +
@@ -528,12 +624,30 @@ function openIdea(id) {
   };
 }
 
-// Einstellungen
+// Einstellungen: wem gehört das Handy, Erinnerungen (Push, E-Mail, Kalender), Passwort
+const LEAD_OPTS = [0, 1, 3, 7, 14, 15, 30, 60];
 function openMenu() {
+  const cfg = S.settings || { remind_days: [30, 15, 7, 0], remind_hour: 9, remind_holidays: true, emails: {}, email_ready: false };
+  const usesHolidays = S.persons.some(p => (p.holidays || []).length);
+  const myMail = (cfg.emails || {})[S.me] || "";
   const m = sheet(
-    "<h3>Einstellungen</h3>" + '<div class="sub">Geschenke v' + VERSION + "</div>" +
+    "<h3>Einstellungen</h3>" + '<div class="sub">Geburtstage v' + VERSION + "</div>" +
     '<div class="flab">Dieses Handy gehört</div>' + chipRow("m_me", S.people.map(p => [p, p]), S.me) +
-    '<div class="hr"></div><div class="flab">Erinnerungen</div><div class="small">Push-Nachrichten, E-Mail und Kalender-Abo kommen mit der nächsten Version.</div>' +
+    '<div class="hr"></div><h4>🔔 Erinnerungen</h4>' +
+    '<div class="flab">Wann erinnern? (gilt für euch beide)</div><div class="chips" id="m_days">' +
+    LEAD_OPTS.map(d => '<button type="button" data-k="' + d + '" class="' + (cfg.remind_days.includes(d) ? "on" : "") + '">' + (d === 0 ? "Am Tag selbst" : d === 1 ? "1 Tag vorher" : d + " Tage vorher") + "</button>").join("") + "</div>" +
+    '<div class="two" style="margin-top:12px;align-items:center"><span class="flab" style="margin:0">Uhrzeit</span><select id="m_hour">' +
+    Array.from({ length: 17 }, (_, i) => i + 6).map(h => '<option value="' + h + '"' + (h === cfg.remind_hour ? " selected" : "") + ">" + h + ":00 Uhr</option>").join("") + "</select></div>" +
+    (usesHolidays ? '<label class="check"><input type="checkbox" id="m_hol"' + (cfg.remind_holidays ? " checked" : "") + "> Auch vor Weihnachten & Co. erinnern (für Geschenke)</label>" : "") +
+    '<div class="flab" style="margin-top:16px">Push-Nachricht auf diesem Handy</div><div id="pushbox" class="small">Wird geprüft …</div>' +
+    '<div class="flab" style="margin-top:16px">E-Mail (optional)</div>' +
+    (cfg.email_ready
+      ? (S.me ? '<div class="two"><input id="m_mail" type="email" inputmode="email" autocomplete="email" placeholder="Adresse von ' + esc(S.me) + '" value="' + esc(myMail) + '"><button class="btn sm" id="m_mailsave">Speichern</button></div>' +
+          (myMail ? '<button class="linkbtn" id="m_mailtest">Test-Mail schicken</button>' : "") +
+          '<div class="small" style="margin-top:4px">Die Adresse muss bei Cloudflare einmal bestätigt sein.</div>'
+        : '<div class="small">Bitte oben auswählen, wem dieses Handy gehört.</div>')
+      : '<div class="small">Ist noch nicht eingerichtet – dafür braucht es eine eigene Internet-Adresse (Domain) bei Cloudflare. Push-Nachrichten und Kalender funktionieren auch ohne.</div>') +
+    '<div class="flab" style="margin-top:16px">Im Handy-Kalender anzeigen</div><div id="calbox"><button class="btn ghost block" id="m_cal">Kalender-Abo einrichten</button></div>' +
     '<div class="hr"></div><div class="flab">Passwort ändern</div>' +
     '<input id="m_old" type="password" autocomplete="current-password" placeholder="Aktuelles Passwort" style="margin-bottom:8px">' +
     '<input id="m_new" type="password" autocomplete="new-password" placeholder="Neues Passwort (mind. 8 Zeichen)" style="margin-bottom:8px">' +
@@ -541,13 +655,99 @@ function openMenu() {
     '<div class="hr"></div><a class="btn danger block" href="/logout" style="text-align:center;text-decoration:none">Abmelden</a>' +
     '<button class="btn ghost block" id="m_close">Schließen</button>'
   );
-  singleChips("m_me", k => { S.me = k; saveLocal(); toast("Dieses Handy gehört " + k); });
+  singleChips("m_me", k => { setMe(k); toast("Dieses Handy gehört " + k); openMenu(); });
   $("m_close").onclick = closeModal;
+  const saveSettings = async body => {
+    try { const r = await api("POST", "/api/settings", body); S.settings = r.settings; saveLocal(); toast("Gespeichert"); return true; }
+    catch (err) { toast(err.message); return false; }
+  };
+  $("m_days").onclick = e => {
+    const b = e.target.closest("button"); if (!b) return;
+    const on = [...$("m_days").querySelectorAll("button.on")].map(x => Number(x.dataset.k));
+    const k = Number(b.dataset.k);
+    const next = on.includes(k) ? on.filter(x => x !== k) : on.concat(k);
+    if (next.length > 6) { toast("Höchstens 6 Zeitpunkte"); return; }
+    b.classList.toggle("on");
+    saveSettings({ remind_days: next });
+  };
+  $("m_hour").onchange = () => saveSettings({ remind_hour: Number($("m_hour").value) });
+  if ($("m_hol")) $("m_hol").onchange = () => saveSettings({ remind_holidays: $("m_hol").checked });
+  if ($("m_mailsave")) $("m_mailsave").onclick = async () => { if (await saveSettings({ email: { person: S.me, address: $("m_mail").value.trim() } })) openMenu(); };
+  if ($("m_mailtest")) $("m_mailtest").onclick = async e => {
+    e.target.disabled = true;
+    try { await api("POST", "/api/email/test", { person: S.me }); toast("Test-Mail ist unterwegs"); } catch (err) { toast(err.message); } finally { e.target.disabled = false; }
+  };
+  $("m_cal").onclick = () => showCalendar(false);
   $("m_pw").onclick = async e => {
     const b = e.target; b.disabled = true;
     try { await api("POST", "/api/password", { old: $("m_old").value, new: $("m_new").value }); toast("Passwort geändert"); $("m_old").value = ""; $("m_new").value = ""; }
     catch (err) { toast(err.message); } finally { b.disabled = false; }
   };
+  drawPush();
+}
+async function showCalendar(fresh) {
+  const box = $("calbox"); if (!box) return;
+  try {
+    const { url } = await api(fresh ? "POST" : "GET", fresh ? "/api/calendar/new" : "/api/calendar", fresh ? {} : undefined);
+    const webcal = url.replace(/^https:/, "webcal:");
+    box.innerHTML = '<a class="btn block" href="' + esc(webcal) + '" style="text-align:center;text-decoration:none">Im Kalender abonnieren</a>' +
+      '<div class="small">Alle Geburtstage erscheinen dann automatisch im Kalender (iPhone & Mac: Antippen genügt). Für Google Kalender den Link kopieren und dort unter „Andere Kalender → Per URL“ einfügen.</div>' +
+      '<div class="two" style="margin-top:8px"><button class="btn ghost sm" id="c_copy">Link kopieren</button><button class="btn ghost sm" id="c_new">Neuer Link</button></div>' +
+      '<div class="small" style="margin-top:6px">„Neuer Link“ macht den alten ungültig – falls ihn jemand Falsches bekommen hat.</div>';
+    $("c_copy").onclick = async () => { try { await navigator.clipboard.writeText(url); toast("Link kopiert"); } catch (e) { prompt("Link kopieren:", url); } };
+    $("c_new").onclick = () => { showCalendar(true); toast("Neuer Link erstellt – bitte neu abonnieren"); };
+  } catch (err) { toast(err.message); }
+}
+
+/* ---------- Wer bin ich & Push ---------- */
+function setMe(p) { S.me = p; saveLocal(); if (S.pushOn) enablePush(true).catch(() => {}); }
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+function keyBytes(b64) { const s = b64.replace(/-/g, "+").replace(/_/g, "/"); const bin = atob(s + "===".slice((s.length + 3) % 4)); return Uint8Array.from(bin, c => c.charCodeAt(0)); }
+async function swReg() { return navigator.serviceWorker.register("/sw.js", { scope: "/" }).then(() => navigator.serviceWorker.ready); }
+async function currentSub() { if (!pushSupported()) return null; try { const r = await navigator.serviceWorker.getRegistration("/"); return r ? await r.pushManager.getSubscription() : null; } catch (e) { return null; } }
+async function enablePush(silent) {
+  if (!S.me) throw new Error("Bitte zuerst auswählen, wem dieses Handy gehört.");
+  const reg = await swReg();
+  if (Notification.permission !== "granted") {
+    const p = await Notification.requestPermission();
+    if (p !== "granted") throw new Error("Benachrichtigungen wurden nicht erlaubt. Du kannst sie in den Einstellungen des Handys erlauben.");
+  }
+  const { key } = await api("GET", "/api/push/key");
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+  const j = sub.toJSON();
+  await api("POST", "/api/push/subscribe", { endpoint: j.endpoint, keys: j.keys, person: S.me });
+  S.pushOn = true;
+  if (!silent) await api("POST", "/api/push/test", { endpoint: j.endpoint });
+}
+async function disablePush() {
+  const sub = await currentSub(); if (!sub) { S.pushOn = false; return; }
+  try { await api("POST", "/api/push/unsubscribe", { endpoint: sub.endpoint }); } catch (e) {}
+  await sub.unsubscribe(); S.pushOn = false;
+}
+async function checkPush() {
+  const sub = await currentSub();
+  S.pushOn = !!sub && pushSupported() && Notification.permission === "granted";
+  return S.pushOn;
+}
+async function drawPush() {
+  const box = $("pushbox"); if (!box) return;
+  if (!pushSupported()) {
+    box.innerHTML = isIOS && !isStandalone()
+      ? 'Auf dem iPhone kommen Push-Nachrichten nur, wenn die App auf dem Home-Bildschirm liegt: unten auf <b>Teilen</b> → <b>Zum Home-Bildschirm</b>, dann die App von dort öffnen und hier einschalten.'
+      : "Dieser Browser kann keine Push-Nachrichten empfangen. Nutzt dann das Kalender-Abo unten.";
+    return;
+  }
+  await checkPush();
+  box.innerHTML = S.pushOn
+    ? "✓ An – dieses Handy bekommt die Erinnerungen." + '<div class="acts" style="margin-top:8px"><button class="btn ghost" id="p_test">Testen</button><button class="btn danger" id="p_off">Ausschalten</button></div>'
+    : 'Aus.<button class="btn block" style="margin-top:8px" id="p_on">Push-Nachrichten einschalten</button>';
+  const busy = (b, t) => { b.disabled = true; b.textContent = t; };
+  if ($("p_on")) $("p_on").onclick = e => { busy(e.target, "Wird eingeschaltet …"); enablePush().then(() => { toast("Eingeschaltet – eine Test-Nachricht ist unterwegs"); drawPush(); }).catch(err => { toast(err.message || "Hat nicht geklappt"); drawPush(); }); };
+  if ($("p_test")) $("p_test").onclick = e => { busy(e.target, "Gesendet …"); currentSub().then(s => api("POST", "/api/push/test", { endpoint: s.endpoint })).then(() => toast("Test-Nachricht ist unterwegs")).catch(err => toast(err.message)).finally(drawPush); };
+  if ($("p_off")) $("p_off").onclick = e => { busy(e.target, "…"); disablePush().then(() => { toast("Push-Nachrichten aus"); drawPush(); }); };
 }
 
 // Personenseite öffnen; „Zurück“ führt zur Ansicht, von der man kam
@@ -556,6 +756,15 @@ function goPerson(pid, created) {
   S.view = "person"; S.pid = pid; window.scrollTo(0, 0); render();
   if (created) { const p = person(pid); toast("„" + (p ? p.name : "") + "“ angelegt"); }
 }
+// Links aus Erinnerungen: /#p=<id> öffnet die Person, /#geschenke die Geschenke-Übersicht
+function handleHash() {
+  const h = location.hash;
+  if (!h) return;
+  const m = h.match(/^#p=([A-Za-z0-9_-]+)$/);
+  history.replaceState(null, "", location.pathname);
+  if (m && person(m[1])) { $("modal").innerHTML = ""; S.view = "upcoming"; goPerson(m[1]); }
+  else if (h === "#geschenke") { $("modal").innerHTML = ""; S.view = "gifts"; render(); }
+}
 
 /* ---------- Klicks in der Hauptansicht ---------- */
 document.addEventListener("click", e => {
@@ -563,12 +772,13 @@ document.addEventListener("click", e => {
   const a = b.dataset.act;
   if (a === "view") { S.view = b.dataset.v; window.scrollTo(0, 0); render(); }
   else if (a === "filter") { S.filter = b.dataset.f; saveLocal(); renderBody(); renderHead(); }
-  else if (a === "me") { S.me = b.dataset.p; saveLocal(); render(); }
+  else if (a === "me") { setMe(b.dataset.p); render(); }
   else if (a === "menu") openMenu();
+  else if (a === "hint-off") { S.pushHintOff = true; saveLocal(); renderBody(); }
   else if (a === "new-person") openPersonForm(null);
   else if (a === "edit-person") openPersonForm(S.pid);
   else if (a === "person") goPerson(b.dataset.pid);
-  else if (a === "back") { S.view = S.back || "persons"; render(); window.scrollTo(0, S.scroll[S.view] || 0); }
+  else if (a === "back") { S.view = S.back || "upcoming"; render(); window.scrollTo(0, S.scroll[S.view] || 0); }
   else if (a === "occ") openOccasion(b.dataset.pid, b.dataset.key, Number(b.dataset.year));
   else if (a === "idea") openIdea(b.dataset.id);
   else if (a === "gift") openGiftForm(b.dataset.id, null, null);
@@ -578,6 +788,8 @@ document.addEventListener("click", e => {
 /* ---------- Start ---------- */
 loadLocal();
 render();
-refresh(true);
+refresh(true).then(handleHash);
+if (pushSupported()) { navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {}); checkPush().then(() => { if (S.view !== "person") renderBody(); }); }
+window.addEventListener("hashchange", handleHash);
 setInterval(() => { if (document.visibilityState === "visible" && !$("modal").innerHTML) refresh(); }, POLL_MS);
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });

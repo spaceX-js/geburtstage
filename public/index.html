@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Geschenke">
+<meta name="apple-mobile-web-app-title" content="Geburtstage">
 <meta name="format-detection" content="telephone=no">
 <meta name="theme-color" content="#f4f0ec" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#161312" media="(prefers-color-scheme: dark)">
@@ -13,7 +13,7 @@
 <link rel="apple-touch-icon" href="/icon.png">
 <link rel="icon" href="/icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
-<title>Geschenke</title>
+<title>Geburtstage</title>
 <style>
 :root{
   --bg:#f4f0ec; --card:#ffffff; --ink:#1f1b18; --mute:#72675f; --line:#e8e0d8;
@@ -144,6 +144,29 @@ label.f > span,.flab{display:block;font-size:13px;color:var(--mute);margin:0 0 5
 @keyframes sp{to{transform:rotate(360deg)}}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 8px 8px 16px;border-radius:12px;font-size:14px;z-index:60;box-shadow:0 8px 24px rgba(0,0,0,.2);display:flex;align-items:center;gap:12px;max-width:calc(100% - 32px);width:max-content}
 .toast span{flex:1;min-width:0;padding:6px 0}
+
+/* Geburtstage */
+.hero{display:flex;gap:14px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:12px 0}
+.hero .big{font-size:38px;line-height:1}
+.hero b{display:block;font-size:20px;letter-spacing:-.01em}
+.hero .hs{display:block;color:var(--mute);font-size:14.5px;margin-top:2px}
+.today{display:flex;gap:14px;align-items:center;width:100%;text-align:left;cursor:pointer;background:var(--acc-soft);border:0;border-radius:var(--r);padding:14px 16px;margin:0 0 8px}
+.today .big{font-size:34px;line-height:1}
+.today b{display:block;font-size:17px}
+.today small{display:block;color:var(--mute);font-size:13.5px;margin-top:2px}
+.hint{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px 10px 10px 14px;margin:12px 0 0;font-size:14.5px}
+.hint span{flex:1}
+.hint .x{background:none;border:0;color:var(--mute);font-size:15px;padding:6px;cursor:pointer}
+.gifthead{font-size:19px;font-weight:700;margin:26px 4px 0;padding-top:18px;border-top:1px solid var(--line)}
+.sheet h4{margin:0 0 10px;font-size:16px}
+details.more-sec{border:1px solid var(--line);border-radius:12px;padding:0 12px;margin-top:16px}
+details.more-sec summary{cursor:pointer;font-weight:600;padding:12px 0;list-style:none}
+details.more-sec summary::-webkit-details-marker{display:none}
+details.more-sec summary:after{content:"›";float:right;color:var(--mute);transition:transform .15s}
+details.more-sec[open] summary:after{transform:rotate(90deg)}
+details.more-sec[open]{padding-bottom:4px}
+label.check{display:flex;gap:10px;align-items:flex-start;font-size:14.5px;margin-top:12px;cursor:pointer}
+.sheet label.check input{width:20px;height:20px;flex:none;margin:1px 0 0;-webkit-appearance:checkbox;appearance:auto;accent-color:var(--acc)}
 .toast button{background:none;border:0;color:var(--acc-soft);font-weight:700;padding:6px 8px;cursor:pointer}
 </style>
 </head>

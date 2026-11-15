@@ -1,4 +1,4 @@
--- Geschenke – Datenbank-Schema (Cloudflare D1)
+-- Geburtstage (Repo „geschenke“) – Datenbank-Schema (Cloudflare D1)
 -- Einmalig ausführen: npx wrangler d1 execute geschenke-db --remote --file=d1-schema.sql
 
 -- Personen, an die wir denken
@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS persons (
   notes       TEXT NOT NULL DEFAULT '',     -- alles, was beim Schenken hilft (Größen, Wünsche …)
   budget_min  INTEGER,                      -- Preisspanne in Euro
   budget_max  INTEGER,
-  responsible TEXT NOT NULL DEFAULT '',     -- wer sich normalerweise kümmert (leer = beide)
+  responsible TEXT NOT NULL DEFAULT '',     -- wer sich normalerweise um Geschenke kümmert (leer = beide)
+  remind      TEXT NOT NULL DEFAULT '',     -- Erinnerungen: '' = Standard, 'tag' = nur am Tag selbst, 'aus' = keine
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -51,8 +52,22 @@ CREATE TABLE IF NOT EXISTS gifts (
 );
 CREATE INDEX IF NOT EXISTS gifts_person ON gifts(person_id, year);
 
--- pw_salt, pw_hash, session_secret, rev (Änderungszähler), people (JSON-Liste der Namen)
+-- pw_salt, pw_hash, session_secret, rev (Änderungszähler), people (JSON-Liste der Namen),
+-- remind_days (JSON, z. B. [30,15,7,0]), remind_hour (Uhrzeit), remind_holidays ('1'/'0'), emails (JSON {Name: Adresse}),
+-- cal_token (geheimer Teil der Kalender-Adresse), origin (Adresse der App), vapid_public / vapid_private (Push-Schlüssel)
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT NOT NULL, ts TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS login_attempts_ip ON login_attempts(ip, ts);
+
+-- Geräte, die Push-Nachrichten bekommen
+CREATE TABLE IF NOT EXISTS push_subs (
+  endpoint   TEXT PRIMARY KEY,
+  p256dh     TEXT NOT NULL,
+  auth       TEXT NOT NULL,
+  person     TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+-- Schon verschickte Erinnerungen (damit keine doppelt kommt)
+CREATE TABLE IF NOT EXISTS reminders_sent (key TEXT PRIMARY KEY, at TEXT NOT NULL);
