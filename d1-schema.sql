@@ -1,5 +1,5 @@
 -- Geburtstage (Repo „geschenke“) – Datenbank-Schema (Cloudflare D1)
--- Einmalig ausführen: npx wrangler d1 execute geschenke-db --remote --file=d1-schema.sql
+-- Einmalig ausführen: npx wrangler d1 execute geburtstage-db --remote --file=d1-schema.sql
 
 -- Personen, an die wir denken
 CREATE TABLE IF NOT EXISTS persons (

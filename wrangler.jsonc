@@ -13,8 +13,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "geschenke-db",
-      "database_id": "5e10e514-e92e-4e17-9c10-331688c3ca78"
+      "database_name": "geburtstage-db",
+      "database_id": "3f6cb949-5f3c-4a1e-876f-1008b6a63a84"
     }
   ],
 

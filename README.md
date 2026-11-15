@@ -41,7 +41,7 @@ Geplant: Geschenkvorschläge mit Cloudflare Workers AI · Import aus Kontakten �
 | `public/index.html`, `public/app.js` | Oberfläche (nur nach Anmeldung erreichbar) |
 | `d1-schema.sql` | Tabellen `persons`, `ideas`, `gifts`, `settings`, `login_attempts`, `push_subs`, `reminders_sent` (für eine neue Datenbank) |
 | `migrations/` | Änderungen für eine bestehende Datenbank |
-| `wrangler.jsonc` | Cloudflare-Einstellungen (Datenbank `geschenke-db`) |
+| `wrangler.jsonc` | Cloudflare-Einstellungen (Datenbank `geburtstage-db`) |
 | `test/` | Tests (`npm test`) |
 
 ## Veröffentlichen
@@ -52,6 +52,6 @@ Manuell: `npm install && npx wrangler deploy`.
 ## Datenbank neu aufsetzen
 
 ```sh
-npx wrangler d1 create geschenke-db            # ID in wrangler.jsonc eintragen
-npx wrangler d1 execute geschenke-db --remote --file=d1-schema.sql
+npx wrangler d1 create geburtstage-db            # ID in wrangler.jsonc eintragen
+npx wrangler d1 execute geburtstage-db --remote --file=d1-schema.sql
 ```
