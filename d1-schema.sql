@@ -14,10 +14,10 @@ CREATE TABLE IF NOT EXISTS persons (
   interests   TEXT NOT NULL DEFAULT '',     -- Hobbys/Interessen, durch "|" getrennt
   dislikes    TEXT NOT NULL DEFAULT '',     -- mag nicht / hat schon
   notes       TEXT NOT NULL DEFAULT '',     -- alles, was beim Schenken hilft (Größen, Wünsche …)
-  budget_min  INTEGER,                      -- Preisspanne in Euro
-  budget_max  INTEGER,
+  budgets     TEXT NOT NULL DEFAULT '{}',   -- Budget je Anlass als JSON: {"geburtstag":{"min":20,"max":50},"weihnachten":{"max":30}}
   responsible TEXT NOT NULL DEFAULT '',     -- wer sich normalerweise um Geschenke kümmert (leer = beide)
   remind      TEXT NOT NULL DEFAULT '',     -- Erinnerungen: '' = Standard, 'tag' = nur am Tag selbst, 'aus' = keine
+  self        TEXT NOT NULL DEFAULT '',     -- steht dieser Eintrag für einen App-Nutzer selbst? ("Jonas"/"Clara") – Geschenke darüber sieht nur der Partner
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS gifts (
 CREATE INDEX IF NOT EXISTS gifts_person ON gifts(person_id, year);
 
 -- pw_salt, pw_hash, session_secret, rev (Änderungszähler), people (JSON-Liste der Namen),
--- remind_days (JSON, z. B. [30,15,7,0]), remind_hour (Uhrzeit), remind_holidays ('1'/'0'), emails (JSON {Name: Adresse}),
+-- remind_days (JSON, z. B. [30,15,7,0]), remind_hour (Uhrzeit), remind_holidays ('1'/'0'),
 -- cal_token (geheimer Teil der Kalender-Adresse), origin (Adresse der App), vapid_public / vapid_private (Push-Schlüssel)
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 

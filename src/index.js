@@ -1,9 +1,9 @@
 // Geburtstage – Cloudflare Worker
-// Bindungen: DB (D1-Datenbank „geburtstage-db“), ASSETS (Ordner public/), optional EMAIL + MAIL_FROM für E-Mail-Erinnerungen.
+// Bindungen: DB (D1-Datenbank „geburtstage-db“) und ASSETS (Ordner public/).
 // Das Passwort liegt nur als Hash in der Datenbank (Tabelle settings).
 // Beim allerersten Aufruf (noch kein Passwort gespeichert) legt man das gemeinsame Passwort fest.
 import { HOLIDAY_KEYS, todayIn } from "../public/occasions.js";
-import { reminderConfig, checkDays, EMAIL_RE, ensureVapid, deliver, emailReady, buildEmail, sendMail, runReminders, buildIcs, TZ } from "./notify.js";
+import { reminderConfig, checkDays, ensureVapid, deliver, runReminders, buildIcs, TZ } from "./notify.js";
 
 const COOKIE = "gs_session";
 const ITER = 100000;
@@ -69,7 +69,7 @@ export async function loadState(env) {
 }
 function settingsOut(settings, env) {
   const c = reminderConfig(settings);
-  return { remind_days: c.days, remind_hour: c.hour, remind_holidays: c.holidays, emails: c.emails, email_ready: emailReady(env) };
+  return { remind_days: c.days, remind_hour: c.hour, remind_holidays: c.holidays };
 }
 
 /* ---------- API ---------- */
@@ -100,15 +100,6 @@ async function api(request, env, settings, url) {
       ops.push(setSetting(env, "remind_hour", String(h)));
     }
     if (b.remind_holidays !== undefined) ops.push(setSetting(env, "remind_holidays", b.remind_holidays ? "1" : "0"));
-    if (b.email !== undefined) {
-      const e = b.email || {};
-      if (!people(settings).includes(e.person)) return json({ error: "Ungültige Person." }, 400);
-      const addr = String(e.address || "").trim();
-      if (addr && (addr.length > 200 || !EMAIL_RE.test(addr))) return json({ error: "Die E-Mail-Adresse sieht nicht richtig aus." }, 400);
-      const emails = reminderConfig(settings).emails;
-      if (addr) emails[e.person] = addr; else delete emails[e.person];
-      ops.push(setSetting(env, "emails", JSON.stringify(emails)));
-    }
     if (!ops.length) return json({ error: "Nichts zu ändern." }, 400);
     const res = await env.DB.batch([...ops, bumpRev(env)]);
     return json({ ok: true, rev: revOf(res[res.length - 1]), settings: settingsOut(await getSettings(env), env) });
@@ -150,31 +141,23 @@ async function api(request, env, settings, url) {
     const status = await deliver(env, [row], { title: "🎂 Erinnerungen sind an", body: "So sieht es aus, wenn bald jemand Geburtstag hat.", tag: "gb-test", url: "/" }, url.origin);
     return status[0] >= 200 && status[0] < 300 ? json({ ok: true }) : json({ error: "Der Push-Dienst hat abgelehnt (" + status[0] + ")." }, 502);
   }
-  if (path === "/api/email/test" && method === "POST") {
-    const b = await readJson(request);
-    const addr = b && reminderConfig(settings).emails[b.person];
-    if (!emailReady(env)) return json({ error: "E-Mail ist noch nicht eingerichtet." }, 400);
-    if (!addr) return json({ error: "Für " + (b && b.person || "diese Person") + " ist keine E-Mail-Adresse gespeichert." }, 400);
-    try { await sendMail(env, addr, buildEmail([{ title: "🎂 Erinnerungen per E-Mail sind an", body: "So sieht es aus, wenn bald jemand Geburtstag hat." }], url.origin)); }
-    catch (e) { return json({ error: "Senden hat nicht geklappt: " + (e && e.message ? e.message : e) + " (Ist die Adresse bei Cloudflare bestätigt?)" }, 502); }
-    return json({ ok: true });
-  }
-
   if (path === "/api/person" && method === "POST") {
     const p = checkPerson(await readJson(request), people(settings));
     if (!p) return json({ error: "Ungültige Angaben zur Person." }, 400);
     const now = new Date().toISOString();
     const res = await env.DB.batch([
-      env.DB.prepare(`INSERT INTO persons (id, name, relation, bday_day, bday_month, bday_year, holidays, extra, interests, dislikes, notes, budget_min, budget_max, responsible, remind, created_at, updated_at)
+      env.DB.prepare(`INSERT INTO persons (id, name, relation, bday_day, bday_month, bday_year, holidays, extra, interests, dislikes, notes, budgets, responsible, remind, self, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, relation = excluded.relation, bday_day = excluded.bday_day, bday_month = excluded.bday_month,
           bday_year = excluded.bday_year, holidays = excluded.holidays, extra = excluded.extra, interests = excluded.interests, dislikes = excluded.dislikes,
-          notes = excluded.notes, budget_min = excluded.budget_min, budget_max = excluded.budget_max, responsible = excluded.responsible, remind = excluded.remind, updated_at = excluded.updated_at`)
+          notes = excluded.notes, budgets = excluded.budgets, responsible = excluded.responsible, remind = excluded.remind, self = excluded.self, updated_at = excluded.updated_at`)
         .bind(p.id, p.name, p.relation, p.bday_day, p.bday_month, p.bday_year, p.holidays.join("|"), JSON.stringify(p.extra), p.interests.join("|"), p.dislikes, p.notes,
-          p.budget_min, p.budget_max, p.responsible, p.remind, now, now),
+          JSON.stringify(p.budgets), p.responsible, p.remind, p.self, now, now),
+      // „Das bin ich“ gibt es pro Nutzer nur einmal
+      env.DB.prepare("UPDATE persons SET self = '' WHERE self = ? AND self <> '' AND id <> ?").bind(p.self, p.id),
       bumpRev(env)
     ]);
-    return json({ ok: true, rev: revOf(res[1]) });
+    return json({ ok: true, rev: revOf(res[2]) });
   }
 
   if (path === "/api/person/delete" && method === "POST") {
@@ -239,11 +222,12 @@ async function api(request, env, settings, url) {
 
 /* ---------- Ausgabe ---------- */
 const split = v => String(v || "").split("|").map(x => x.trim()).filter(Boolean);
+function parseObj(v) { try { const o = JSON.parse(v || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch (e) { return {}; } }
 function parseExtra(v) { try { const a = JSON.parse(v || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
 function personOut(r) {
   return { id: r.id, name: r.name, relation: r.relation || "", bday_day: r.bday_day ?? null, bday_month: r.bday_month ?? null, bday_year: r.bday_year ?? null,
     holidays: split(r.holidays), extra: parseExtra(r.extra), interests: split(r.interests), dislikes: r.dislikes || "", notes: r.notes || "",
-    budget_min: r.budget_min ?? null, budget_max: r.budget_max ?? null, responsible: r.responsible || "", remind: r.remind || "", created_at: r.created_at, updated_at: r.updated_at };
+    budgets: parseObj(r.budgets), responsible: r.responsible || "", remind: r.remind || "", self: r.self || "", created_at: r.created_at, updated_at: r.updated_at };
 }
 function ideaOut(r) { return { id: r.id, person_id: r.person_id, text: r.text, link: r.link || "", price: r.price ?? null, added_by: r.added_by || "", created_at: r.created_at }; }
 function giftOut(r) {
@@ -277,9 +261,16 @@ export function checkPerson(b, names = PEOPLE_DEFAULT) {
   if ((day === null) !== (month === null)) return null;                // Tag und Monat nur zusammen
   if (day !== null && !validDay(day, month, year)) return null;
   if (day === null && year !== null) return null;
-  const bmin = intOrNull(b.budget_min, 0, 100000), bmax = intOrNull(b.budget_max, 0, 100000);
-  if (bmin === undefined || bmax === undefined) return null;
-  if (bmin !== null && bmax !== null && bmin > bmax) return null;
+  // Budget je Anlass: { "geburtstag": { "min": 20, "max": 50 }, "weihnachten": { "max": 30 }, … }
+  const budgets = {};
+  const bin = b.budgets && typeof b.budgets === "object" && !Array.isArray(b.budgets) ? b.budgets : {};
+  for (const [k, v] of Object.entries(bin).slice(0, 20)) {
+    if (!OCC_RE.test(k) || !v || typeof v !== "object") return null;
+    const mn = intOrNull(v.min, 0, 100000), mx = intOrNull(v.max, 0, 100000);
+    if (mn === undefined || mx === undefined || (mn !== null && mx !== null && mn > mx)) return null;
+    if (mn === null && mx === null) continue;
+    budgets[k] = mn === null ? { max: mx } : mx === null ? { min: mn } : { min: mn, max: mx };
+  }
   const holidays = [...new Set((Array.isArray(b.holidays) ? b.holidays : []).filter(h => HOLIDAY_KEYS.includes(h)))];
   const extra = [];
   const seen = new Set();
@@ -297,8 +288,9 @@ export function checkPerson(b, names = PEOPLE_DEFAULT) {
   }
   return {
     id: b.id, name, relation: oneLine(b.relation, 40), bday_day: day, bday_month: month, bday_year: year, holidays, extra, interests,
-    dislikes: clean(b.dislikes, 1000), notes: clean(b.notes, 3000), budget_min: bmin, budget_max: bmax,
-    responsible: names.includes(b.responsible) ? b.responsible : "", remind: REMIND.includes(b.remind) ? b.remind : ""
+    dislikes: clean(b.dislikes, 1000), notes: clean(b.notes, 3000), budgets,
+    responsible: names.includes(b.responsible) ? b.responsible : "", remind: REMIND.includes(b.remind) ? b.remind : "",
+    self: names.includes(b.self) ? b.self : ""
   };
 }
 

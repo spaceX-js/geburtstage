@@ -129,3 +129,30 @@ export function occTitle(o) {
   if (o.age !== null && o.age !== undefined && o.age > 0) return o.age + ". " + o.label;
   return o.label;
 }
+
+// Ehepaar: Personen-Einträge, die für die App-Nutzer selbst stehen (Feld „self“ = "Jonas" / "Clara")
+export function selfIds(persons) { const m = {}; for (const p of persons) if (p.self) m[p.self] = p.id; return m; }
+// Die Personen-ID des Partners von „viewer“ (oder null)
+export function partnerOf(persons, viewer) {
+  const mine = persons.find(p => p.self && p.self === viewer);
+  if (!mine) return null;
+  const other = persons.find(p => p.self && p.self !== viewer);
+  return other ? other.id : null;
+}
+// Gemeinsame Termine des Ehepaars (gleicher Name und gleiches Datum, z. B. Hochzeitstag) nur einmal zeigen.
+// Das zusammengefasste Element hat couple: true und members: [{ personId, key }, …].
+export function mergeCouple(list, persons) {
+  const selfSet = new Set(persons.filter(p => p.self).map(p => p.id));
+  if (selfSet.size < 2) return list;
+  const out = [], used = new Set();
+  list.forEach((o, i) => {
+    if (used.has(i)) return;
+    if (!o.key.startsWith("x:") || !selfSet.has(o.personId)) { out.push(o); return; }
+    const j = list.findIndex((q, k) => k > i && !used.has(k) && q.key.startsWith("x:") && selfSet.has(q.personId) && q.personId !== o.personId &&
+      q.date === o.date && q.label.trim().toLowerCase() === o.label.trim().toLowerCase());
+    if (j < 0) { out.push(o); return; }
+    used.add(j);
+    out.push({ ...o, couple: true, members: [{ personId: o.personId, key: o.key }, { personId: list[j].personId, key: list[j].key }] });
+  });
+  return out;
+}

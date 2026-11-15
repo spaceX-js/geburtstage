@@ -2,7 +2,7 @@
 // Zeigt die nächsten Geburtstage, alle Personen und (als Zusatz) Geschenk-Ideen und -Historie; speichert alles über /api/… in der Datenbank.
 import * as O from "/occasions.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const CACHE_KEY = "geschenke.v1";
 const POLL_MS = 5000;
 const STATUS = [
@@ -25,14 +25,25 @@ const thisYear = () => new Date().getFullYear();
 const person = id => S.persons.find(p => p.id === id);
 const euro = n => (n === null || n === undefined || n === "") ? "" : n + " €";
 const numOrNull = v => { const s = String(v == null ? "" : v).trim().replace(",", "."); if (!s) return null; const n = Math.round(Number(s)); return Number.isFinite(n) && n >= 0 ? n : NaN; };
-function budgetText(p) {
-  if (!p) return "";
-  const a = p.budget_min, b = p.budget_max;
-  if (a != null && b != null) return a === b ? a + " €" : a + "–" + b + " €";
-  if (b != null) return "bis " + b + " €";
+// Budget einer Person für einen Anlass ("bis 100 €", "50–80 €" oder "")
+function budgetText(p, key) {
+  const b = p && p.budgets && p.budgets[key];
+  if (!b) return "";
+  const a = b.min ?? null, z = b.max ?? null;
+  if (a != null && z != null) return a === z ? a + " €" : a + "–" + z + " €";
+  if (z != null) return "bis " + z + " €";
   if (a != null) return "ab " + a + " €";
   return "";
 }
+// Geheimhaltung: Geschenke über mich selbst sehe ich nicht. Ist unklar, wem das Handy gehört, bleiben beide Ehepartner verborgen.
+function isSecret(pid) {
+  const p = person(pid);
+  if (!p || !p.self) return false;
+  return !S.me || p.self === S.me;
+}
+const myPid = () => { const p = S.persons.find(x => x.self && x.self === S.me); return p ? p.id : null; };
+const partnerPid = () => O.partnerOf(S.persons, S.me);
+const isCouple = () => S.persons.filter(p => p.self).length >= 2;
 function occLabel(p, key) {
   if (key === "geburtstag") return "Geburtstag";
   const h = O.HOLIDAYS.find(x => x.key === key); if (h) return h.label;
@@ -131,7 +142,7 @@ function responsibleFor(o) {
   const p = person(o.personId); return p ? p.responsible : "";
 }
 function upcomingList(days = 365) {
-  let list = O.upcoming(S.persons, today(), days);
+  let list = O.upcoming(S.persons, today(), days).filter(o => !isSecret(o.personId));
   if (S.filter === "meine" && S.me) list = list.filter(o => { const r = responsibleFor(o); return !r || r === S.me; });
   return list;
 }
@@ -169,7 +180,7 @@ function renderBody() {
 
 function whoBox() {
   if (S.me) return "";
-  return '<div class="whobox"><b>Wem gehört dieses Handy?</b><div class="small">Damit Erinnerungen und „von …“ stimmen.</div><div class="chips">' +
+  return '<div class="whobox"><b>Wem gehört dieses Handy?</b><div class="small">Damit Erinnerungen stimmen und Geschenke für dich eine Überraschung bleiben.</div><div class="chips">' +
     S.people.map(p => '<button data-act="me" data-p="' + esc(p) + '">' + esc(p) + "</button>").join("") + "</div></div>";
 }
 // Hinweis, solange auf diesem Handy keine Erinnerungen ankommen
@@ -180,6 +191,8 @@ function pushHint() {
 const birthdayOcc = o => !O.HOLIDAY_KEYS.includes(o.key);
 // Kleiner Geschenk-Hinweis an einer Zeile – nur wenn schon etwas geplant ist
 function giftMark(o) {
+  if (o.couple) { const m = o.members.find(x => x.personId === partnerPid()); if (!m) return ""; o = { ...o, personId: m.personId, key: m.key }; }
+  if (isSecret(o.personId)) return "";
   const st = stateOf(o.personId, o.key, o.year);
   if (st.key === "none") return "";
   return ' <span class="pill s-' + st.key + '">🎁 ' + esc(st.label) + "</span>";
@@ -192,14 +205,15 @@ function emptyStart() {
 // Demnächst: Geburtstage und eigene Termine der nächsten 12 Monate
 function renderUpcoming() {
   if (!S.persons.length) { $("app").innerHTML = emptyStart(); return; }
-  const list = O.upcoming(S.persons, today(), 365).filter(birthdayOcc);
+  const list = O.mergeCouple(O.upcoming(S.persons, today(), 365).filter(birthdayOcc), S.persons);
   let h = whoBox() + pushHint();
   const todays = list.filter(o => o.inDays === 0);
   if (todays.length) {
     h += '<div class="sec"><b>Heute 🎉</b></div>' + todays.map(o => {
       const p = person(o.personId);
-      const t = o.key === "geburtstag" ? (o.age ? esc(p.name) + " wird heute " + o.age + "!" : esc(p.name) + " hat heute Geburtstag!") : esc(O.occTitle(o)) + " von " + esc(p.name);
-      return '<button class="today" data-act="person" data-pid="' + esc(p.id) + '"><span class="big">' + (o.key === "geburtstag" ? "🎂" : "⭐") + "</span><span><b>" + t + "</b>" +
+      const t = o.couple ? (o.members.some(m => m.personId === myPid()) ? "Heute ist euer " + esc(O.occTitle(o)) + "!" : esc(O.occTitle(o)) + " von " + esc(coupleNames(o)))
+        : o.key === "geburtstag" ? (o.age ? esc(p.name) + " wird heute " + o.age + "!" : esc(p.name) + " hat heute Geburtstag!") : esc(O.occTitle(o)) + " von " + esc(p.name);
+      return '<button class="today" data-act="person" data-pid="' + esc(rowTarget(o)) + '"><span class="big">' + (o.key === "geburtstag" ? "🎂" : o.couple ? "💍" : "⭐") + "</span><span><b>" + t + "</b>" +
         '<small>Gratulieren nicht vergessen' + giftMark(o) + "</small></span></button>";
     }).join("");
   }
@@ -219,8 +233,18 @@ function renderUpcoming() {
   if (month) h += "</div>";
   $("app").innerHTML = h;
 }
+const coupleNames = o => o.members.map(m => (person(m.personId) || {}).name).join(" & ");
+// Ein Ehepaar-Termin führt zum Partner (dort plane ich mein Geschenk)
+const rowTarget = o => o.couple ? ((o.members.find(m => m.personId === partnerPid()) || o.members[0]).personId) : o.personId;
 function bdayRow(o) {
   const p = person(o.personId);
+  if (o.couple) {
+    const { d } = O.parseIso(o.date);
+    return '<button class="row" data-act="person" data-pid="' + esc(rowTarget(o)) + '">' +
+      '<div class="date' + (o.inDays <= 7 ? " soon" : "") + '"><b>' + d + "</b><small>" + O.WEEKDAYS[O.weekday(o.date)] + "</small></div>" +
+      '<div class="main"><div class="n">💍 ' + esc(coupleNames(o)) + (o.round ? '<span class="pill round">Jubiläum</span>' : "") + '</div><div class="d">' + esc(O.occTitle(o)) + " · " + O.fmtIn(o.inDays) + giftMark(o) + "</div></div>" +
+      '<span class="chev">›</span></button>';
+  }
   const { d } = O.parseIso(o.date);
   const round = o.round ? '<span class="pill round">' + (o.key === "geburtstag" ? "rund" : "Jubiläum") + "</span>" : "";
   const what = o.key === "geburtstag" ? (o.age ? "wird " + o.age : "Geburtstag") : esc(O.occTitle(o));
@@ -288,7 +312,8 @@ function occRow(o, showName = true) {
   const { d } = O.parseIso(o.date);
   const round = o.round ? '<span class="pill round">' + (o.key === "geburtstag" ? "rund" : "Jubiläum") + "</span>" : "";
   const name = showName ? esc(p.name) + round : esc(O.occTitle(o)) + round;
-  const sub = (showName ? esc(O.occTitle(o)) + " · " : "") + O.fmtIn(o.inDays);
+  const bt = budgetText(p, o.key);
+  const sub = (showName ? esc(O.occTitle(o)) + " · " : "") + O.fmtIn(o.inDays) + (bt ? " · " + bt : "");
   return '<button class="row" data-act="occ" data-pid="' + esc(o.personId) + '" data-key="' + esc(o.key) + '" data-year="' + o.year + '">' +
     '<div class="date' + (o.inDays <= 7 ? " soon" : "") + '"><b>' + d + "</b><small>" + O.WEEKDAYS[O.weekday(o.date)] + "</small></div>" +
     '<div class="main"><div class="n">' + name + '</div><div class="d">' + sub + " " + pill(st) + "</div></div>" +
@@ -321,13 +346,23 @@ function renderPerson() {
   if (extras.length) h += '<div class="list" style="margin-bottom:12px">' + extras.map(o => '<div class="row" style="cursor:default"><div class="date"><b>' + O.parseIso(o.date).d + "</b><small>" +
     O.MONTHS_SHORT[O.parseIso(o.date).m - 1].replace(".", "") + '</small></div><div class="main"><div class="n">' + esc(O.occTitle(o)) + (o.round ? ' <span class="pill round">Jubiläum</span>' : "") +
     '</div><div class="d">' + O.fmtIn(o.inDays) + "</div></div></div>").join("") + "</div>";
-  if (p.relation) h += '<div class="small" style="margin:-4px 4px 12px">' + esc(p.relation) + "</div>";
+  const partnerOfP = p.self ? S.persons.find(x => x.self && x.self !== p.self) : null;
+  const rel = [p.relation ? esc(p.relation) : "", partnerOfP ? "💍 verheiratet mit " + esc(partnerOfP.name) : ""].filter(Boolean).join(" · ");
+  if (rel) h += '<div class="small" style="margin:-4px 4px 12px">' + rel + "</div>";
 
   // Erinnerungen
   h += '<div class="card"><div class="flab">Erinnerungen für ' + esc(p.name.split(" ")[0]) + '</div>' + chipRow("p_remind", REMIND_OPTS, p.remind || "") +
     '<div class="small" style="margin-top:8px">' + remindText(p.remind) + "</div></div>";
 
-  // Geschenke (Zusatz)
+  // Geschenke (Zusatz) – über mich selbst geheim
+  if (isSecret(p.id)) {
+    h += '<div class="gifthead">🎁 Geschenke</div><div class="card small" style="margin-top:10px">' +
+      (S.me ? "Was " + esc(S.me === p.self ? "du" : p.name) + " geschenkt bekommst, bleibt hier verborgen – damit es eine Überraschung bleibt. 🤫"
+        : "Bitte zuerst in den Einstellungen auswählen, wem dieses Handy gehört. Bis dahin bleiben Geschenke für Jonas und Clara verborgen.") + "</div>";
+    $("app").innerHTML = h;
+    singleChips("p_remind", k => { savePerson({ ...p, remind: k }); renderPerson(); toast(k === "aus" ? "Keine Erinnerungen für " + p.name : "Gespeichert"); });
+    return;
+  }
   h += '<div class="gifthead">🎁 Geschenke</div>';
   const giftOcc = all.slice(0, 4);
   h += '<div class="sec" style="margin-top:8px"><b>Nächste Anlässe</b></div>';
@@ -358,7 +393,8 @@ function renderPerson() {
 
   h += '<div class="sec"><b>Was wir wissen</b><button class="linkbtn" data-act="edit-person">Bearbeiten</button></div><div class="card">';
   const rows = [];
-  if (budgetText(p)) rows.push('<div class="kv"><span>Budget</span><b>' + budgetText(p) + "</b></div>");
+  const budgets = Object.keys(p.budgets || {}).map(k => occLabel(p, k) + " " + budgetText(p, k)).filter(x => !/ $/.test(x));
+  if (budgets.length) rows.push('<div class="kv"><span>Budget</span><b>' + esc(budgets.join(", ")) + "</b></div>");
   if (p.responsible) rows.push('<div class="kv"><span>Kümmert sich</span><b>' + esc(p.responsible) + "</b></div>");
   if ((p.holidays || []).length) rows.push('<div class="kv"><span>Auch schenken an</span><b>' + esc(p.holidays.map(k => occLabel(p, k)).join(", ")) + "</b></div>");
   const know = [];
@@ -366,7 +402,7 @@ function renderPerson() {
   if ((p.interests || []).length) know.push('<div class="lab">Interessen</div><div class="tags">' + p.interests.map(i => '<span class="tag">' + esc(i) + "</span>").join("") + "</div>");
   if (p.dislikes) know.push('<div class="lab">Mag nicht / hat schon</div><div class="txt">' + esc(p.dislikes) + "</div>");
   if (p.notes) know.push('<div class="lab">Notizen</div><div class="txt">' + esc(p.notes) + "</div>");
-  h += know.length ? know.join("") : '<div class="small">Budget, Interessen, Größen, Wünsche – hilft beim Schenken. Alles freiwillig.</div>';
+  h += know.length ? know.join("") : '<div class="small">Interessen, Größen, Wünsche – hilft beim Schenken. Alles freiwillig. Ein Budget legt ihr pro Anlass fest: Anlass oben antippen.</div>';
   h += "</div>";
   $("app").innerHTML = h;
 
@@ -409,8 +445,9 @@ const peopleOpts = () => [["", "Beide"]].concat(S.people.map(p => [p, p]));
 function openPersonForm(id) {
   const old = id ? person(id) : null;
   const p = old ? JSON.parse(JSON.stringify(old)) : { id: uid("p"), name: "", relation: "", bday_day: null, bday_month: null, bday_year: null, holidays: [], extra: [],
-    interests: [], dislikes: "", notes: "", budget_min: null, budget_max: null, responsible: "", remind: "" };
-  const hasGiftInfo = p.budget_min != null || p.budget_max != null || p.responsible || (p.holidays || []).length || (p.interests || []).length || p.dislikes || p.notes;
+    interests: [], dislikes: "", notes: "", budgets: {}, responsible: "", remind: "", self: "" };
+  const hasGiftInfo = p.responsible || (p.holidays || []).length || (p.interests || []).length || p.dislikes || p.notes;
+  const secret = old && isSecret(p.id);
   let extra = (p.extra || []).map(x => ({ ...x }));
   const dayOpts = sel => '<option value="">Tag</option>' + Array.from({ length: 31 }, (_, i) => '<option' + (sel === i + 1 ? " selected" : "") + ">" + (i + 1) + "</option>").join("");
   const monOpts = sel => '<option value="">Monat</option>' + O.MONTHS.map((m, i) => '<option value="' + (i + 1) + '"' + (sel === i + 1 ? " selected" : "") + ">" + m + "</option>").join("");
@@ -425,21 +462,21 @@ function openPersonForm(id) {
     '<div class="flab">Weitere Termine (Hochzeitstag, Namenstag …)</div><div id="f_extra"></div>' +
     '<button type="button" class="linkbtn" id="f_addx">+ Termin hinzufügen</button>' +
     '<div class="flab" style="margin-top:12px">Erinnerungen</div>' + chipRow("f_remind", REMIND_OPTS, p.remind || "") +
-    '<details class="more-sec"' + (hasGiftInfo ? " open" : "") + '><summary>🎁 Für Geschenke (optional)</summary>' +
-    '<div class="flab">Budget in Euro</div><div class="two" style="margin-bottom:12px"><input id="f_bmin" inputmode="numeric" placeholder="von" value="' + esc(p.budget_min ?? "") + '">' +
-    '<input id="f_bmax" inputmode="numeric" placeholder="bis" value="' + esc(p.budget_max ?? "") + '"></div>' +
+    '<div class="flab" style="margin-top:12px">Ist das einer von euch beiden?</div>' + chipRow("f_self", [["", "Nein"]].concat(S.people.map(n => [n, n])), p.self || "") +
+    (secret ? "" : '<details class="more-sec"' + (hasGiftInfo ? " open" : "") + '><summary>🎁 Für Geschenke (optional)</summary>' +
     '<div class="flab">Wer kümmert sich normalerweise ums Geschenk?</div>' + chipRow("f_resp", peopleOpts(), p.responsible || "") +
     '<div class="flab" style="margin-top:14px">Auch an diesen Tagen schenken</div><div class="chips" id="f_hol">' +
     O.HOLIDAYS.map(h => '<button type="button" data-k="' + h.key + '" class="' + ((p.holidays || []).includes(h.key) ? "on" : "") + '">' + h.label + "</button>").join("") + "</div>" +
     '<label class="f" style="margin-top:14px"><span>Interessen (mit Komma trennen)</span><input id="f_int" value="' + esc((p.interests || []).join(", ")) + '" placeholder="z. B. Kochen, Wandern, Krimis"></label>' +
     '<label class="f"><span>Mag nicht / hat schon</span><textarea id="f_dis" maxlength="1000">' + esc(p.dislikes) + "</textarea></label>" +
     '<label class="f"><span>Notizen (Größen, Wünsche, Lieblingsfarbe …)</span><textarea id="f_notes" maxlength="3000">' + esc(p.notes) + "</textarea></label>" +
-    "</details>" +
+    '<div class="small" style="margin-bottom:10px">Das Budget legt ihr pro Anlass fest (Geburtstag, Weihnachten …): auf der Personenseite den Anlass antippen.</div>' +
+    "</details>") +
     '<div class="acts"><button class="btn ghost" id="f_cancel">Abbrechen</button><button class="btn" id="f_save">Speichern</button></div>' +
     (old ? '<button class="btn danger block" id="f_del" style="margin-top:14px">Person löschen</button>' : "")
   );
-  singleChips("f_resp"); singleChips("f_remind");
-  $("f_hol").onclick = e => { const b = e.target.closest("button"); if (b) b.classList.toggle("on"); };
+  singleChips("f_resp"); singleChips("f_remind"); singleChips("f_self");
+  if ($("f_hol")) $("f_hol").onclick = e => { const b = e.target.closest("button"); if (b) b.classList.toggle("on"); };
   function syncExtra() {
     extra = extra.map((x, i) => ({ id: x.id, label: ($("x_l" + i) || {}).value || "", d: Number(($("x_d" + i) || {}).value) || null, m: Number(($("x_m" + i) || {}).value) || null,
       y: numOrNull(($("x_y" + i) || {}).value) }));
@@ -467,9 +504,6 @@ function openPersonForm(id) {
     if (Number.isNaN(y) || (y !== null && (y < 1900 || y > thisYear()))) { toast("Das Geburtsjahr sieht nicht richtig aus."); return; }
     if (y !== null && d === null) { toast("Ein Geburtsjahr geht nur zusammen mit Tag und Monat."); return; }
     if (d && d > O.daysInMonth(y || 2000, mo)) { toast("Diesen Tag gibt es in dem Monat nicht."); return; }
-    const bmin = numOrNull($("f_bmin").value), bmax = numOrNull($("f_bmax").value);
-    if (Number.isNaN(bmin) || Number.isNaN(bmax)) { toast("Beim Budget bitte nur Zahlen eingeben."); return; }
-    if (bmin != null && bmax != null && bmin > bmax) { toast("Beim Budget ist „von“ größer als „bis“."); return; }
     const ex = [];
     for (const x of extra) {
       if (!x.label.trim() && !x.d && !x.m) continue;
@@ -478,10 +512,13 @@ function openPersonForm(id) {
       if (x.d > O.daysInMonth(x.y || 2000, x.m)) { toast("Bei „" + (x.label || "Termin") + "“ gibt es diesen Tag nicht."); return; }
       ex.push(x.y ? { id: x.id, label: x.label.trim() || "Termin", d: x.d, m: x.m, y: x.y } : { id: x.id, label: x.label.trim() || "Termin", d: x.d, m: x.m });
     }
-    const out = { ...p, name: name.slice(0, 80), relation: $("f_rel").value.trim().slice(0, 40), bday_day: d, bday_month: mo, bday_year: y,
-      holidays: [...$("f_hol").querySelectorAll("button.on")].map(b => b.dataset.k), extra: ex,
+    const out = { ...p, name: name.slice(0, 80), relation: $("f_rel").value.trim().slice(0, 40), bday_day: d, bday_month: mo, bday_year: y, extra: ex,
+      remind: chipValue("f_remind"), self: chipValue("f_self") };
+    if (!secret) Object.assign(out, { holidays: [...$("f_hol").querySelectorAll("button.on")].map(b => b.dataset.k),
       interests: $("f_int").value.split(/[,;\n]/).map(s => s.trim()).filter(Boolean).slice(0, 30),
-      dislikes: $("f_dis").value.trim(), notes: $("f_notes").value.trim(), budget_min: bmin, budget_max: bmax, responsible: chipValue("f_resp"), remind: chipValue("f_remind") };
+      dislikes: $("f_dis").value.trim(), notes: $("f_notes").value.trim(), responsible: chipValue("f_resp") });
+    // „Das bin ich“ gibt es nur einmal pro Person
+    if (out.self) for (const q of S.persons) if (q.id !== out.id && q.self === out.self) q.self = "";
     savePerson(out);
     $("modal").innerHTML = "";
     if (!old) return goPerson(out.id, "angelegt");
@@ -491,7 +528,7 @@ function openPersonForm(id) {
 
 // Ein Anlass: Geschenke dafür, Ideen übernehmen, früher Geschenktes
 function openOccasion(pid, key, year) {
-  const p = person(pid); if (!p) return;
+  const p = person(pid); if (!p || isSecret(pid)) return;
   const o = O.occasionsInYear(p, year).find(x => x.key === key) || { key, label: occLabel(p, key), date: null, year, age: null };
   const gs = giftsFor(pid, key, year);
   const ideas = S.ideas.filter(i => i.person_id === pid);
@@ -499,8 +536,12 @@ function openOccasion(pid, key, year) {
     .sort((a, b) => b.year - a.year).slice(0, 6);
   const sub = [];
   if (o.date) sub.push(O.fmtDate(o.date, { weekday: true, long: true, year: true }) + " · " + O.fmtIn(O.daysBetween(today(), o.date)));
-  if (budgetText(p)) sub.push("Budget " + budgetText(p));
   let h = "<h3>" + esc(p.name) + " – " + esc(O.occTitle(o)) + (o.round ? ' <span class="pill round">rund</span>' : "") + '</h3><div class="sub">' + esc(sub.join(" · ")) + "</div>";
+  const bt = budgetText(p, key), bud = (p.budgets || {})[key] || {};
+  h += '<div class="budget" id="o_budget"><span>💶 Budget für ' + esc(occLabel(p, key)) + ": <b>" + (bt || "keins") + '</b></span><button class="linkbtn" id="o_bedit">' + (bt ? "Ändern" : "Festlegen") + "</button></div>" +
+    '<div class="budget-edit" id="o_bform" style="display:none"><div class="two"><input id="o_bmin" inputmode="numeric" placeholder="von €" value="' + esc(bud.min ?? "") + '">' +
+    '<input id="o_bmax" inputmode="numeric" placeholder="bis €" value="' + esc(bud.max ?? "") + '"></div><div class="small" style="margin:6px 0">Gilt jedes Jahr für ' + esc(occLabel(p, key)) + ".</div>" +
+    '<button class="btn sm" id="o_bsave">Budget speichern</button></div>';
   if (!gs.length) h += '<div class="small" style="margin:0 0 12px">Noch nichts geplant.</div>';
   for (const g of gs) {
     if (g.status === "nichts") {
@@ -532,11 +573,20 @@ function openOccasion(pid, key, year) {
     else if (b.dataset.idea) {
       const i = S.ideas.find(x => x.id === b.dataset.idea); if (!i) return;
       saveGift({ id: uid("g"), person_id: pid, occasion: key, year, title: i.text.slice(0, 160), price: i.price, status: "idee", rating: 0,
-        note: i.link || "", who: p.responsible || "", created_at: nowIso() });
+        note: i.link || "", who: defaultWho(p), created_at: nowIso() });
       deleteIdea(i.id, true); again(); toast("Idee übernommen");
     }
   };
   $("o_add").onclick = () => openGiftForm(null, { person_id: pid, occasion: key, year }, again);
+  $("o_bedit").onclick = () => { $("o_bform").style.display = ""; $("o_budget").style.display = "none"; $("o_bmax").focus(); };
+  $("o_bsave").onclick = () => {
+    const mn = numOrNull($("o_bmin").value), mx = numOrNull($("o_bmax").value);
+    if (Number.isNaN(mn) || Number.isNaN(mx)) { toast("Bitte nur Zahlen eingeben."); return; }
+    if (mn != null && mx != null && mn > mx) { toast("„von“ ist größer als „bis“."); return; }
+    const budgets = { ...(p.budgets || {}) };
+    if (mn == null && mx == null) delete budgets[key]; else budgets[key] = mn == null ? { max: mx } : mx == null ? { min: mn } : { min: mn, max: mx };
+    savePerson({ ...p, budgets }); toast("Budget gespeichert"); again();
+  };
   if ($("o_none")) $("o_none").onclick = () => { saveGift({ id: uid("g"), person_id: pid, occasion: key, year, title: "Diesmal nichts", price: null, status: "nichts", rating: 0, note: "", who: "", created_at: nowIso() }); again(); };
   $("o_close").onclick = closeModal;
   $("o_person").onclick = () => { $("modal").innerHTML = ""; goPerson(pid); };
@@ -546,8 +596,8 @@ function openOccasion(pid, key, year) {
 function openGiftForm(id, defaults, after) {
   const old = id ? S.gifts.find(g => g.id === id) : null;
   const g = old ? { ...old } : { id: uid("g"), person_id: defaults.person_id, occasion: defaults.occasion || "geburtstag", year: defaults.year || thisYear(), title: "", price: null,
-    status: defaults.status || "idee", rating: 0, note: "", who: (person(defaults.person_id) || {}).responsible || "", created_at: nowIso() };
-  const p = person(g.person_id); if (!p) return;
+    status: defaults.status || "idee", rating: 0, note: "", who: defaultWho(person(defaults.person_id)), created_at: nowIso() };
+  const p = person(g.person_id); if (!p || isSecret(p.id)) return;
   const occs = [];
   if (p.bday_day) occs.push(["geburtstag", "Geburtstag"]);
   for (const x of p.extra || []) occs.push(["x:" + x.id, x.label]);
@@ -555,7 +605,7 @@ function openGiftForm(id, defaults, after) {
   if (!occs.some(([k]) => k === g.occasion)) occs.unshift([g.occasion, occLabel(p, g.occasion)]);
   const done = () => { $("modal").innerHTML = ""; if (after) after(); else render(); };
   const m = sheet(
-    "<h3>" + (old ? "Geschenk bearbeiten" : "Geschenk eintragen") + '</h3><div class="sub">für ' + esc(p.name) + (budgetText(p) ? " · Budget " + budgetText(p) : "") + "</div>" +
+    "<h3>" + (old ? "Geschenk bearbeiten" : "Geschenk eintragen") + '</h3><div class="sub">für ' + esc(p.name) + (budgetText(p, g.occasion) ? " · Budget " + budgetText(p, g.occasion) : "") + "</div>" +
     '<label class="f"><span>Was?</span><input id="g_title" maxlength="160" value="' + esc(g.title === "Diesmal nichts" ? "" : g.title) + '" placeholder="z. B. Kochkurs für zwei"></label>' +
     '<div class="two"><label class="f"><span>Anlass</span><select id="g_occ">' + occs.map(([k, l]) => '<option value="' + esc(k) + '"' + (k === g.occasion ? " selected" : "") + ">" + esc(l) + "</option>").join("") + "</select></label>" +
     '<label class="f"><span>Jahr</span><input id="g_year" inputmode="numeric" maxlength="4" value="' + g.year + '"></label></div>' +
@@ -618,7 +668,7 @@ function openIdea(id) {
     const v = read(); if (!v) return;
     const [key, year] = $("i_occ").value.split("|");
     saveGift({ id: uid("g"), person_id: i.person_id, occasion: key, year: Number(year), title: v.text.slice(0, 160), price: v.price, status: "idee", rating: 0,
-      note: v.link || "", who: (p && p.responsible) || "", created_at: nowIso() });
+      note: v.link || "", who: defaultWho(p), created_at: nowIso() });
     deleteIdea(i.id, true);
     openOccasion(i.person_id, key, Number(year)); toast("Eingeplant");
   };
@@ -627,9 +677,8 @@ function openIdea(id) {
 // Einstellungen: wem gehört das Handy, Erinnerungen (Push, E-Mail, Kalender), Passwort
 const LEAD_OPTS = [0, 1, 3, 7, 14, 15, 30, 60];
 function openMenu() {
-  const cfg = S.settings || { remind_days: [30, 15, 7, 0], remind_hour: 9, remind_holidays: true, emails: {}, email_ready: false };
+  const cfg = S.settings || { remind_days: [30, 15, 7, 0], remind_hour: 9, remind_holidays: true };
   const usesHolidays = S.persons.some(p => (p.holidays || []).length);
-  const myMail = (cfg.emails || {})[S.me] || "";
   const m = sheet(
     "<h3>Einstellungen</h3>" + '<div class="sub">Geburtstage v' + VERSION + "</div>" +
     '<div class="flab">Dieses Handy gehört</div>' + chipRow("m_me", S.people.map(p => [p, p]), S.me) +
@@ -640,13 +689,6 @@ function openMenu() {
     Array.from({ length: 17 }, (_, i) => i + 6).map(h => '<option value="' + h + '"' + (h === cfg.remind_hour ? " selected" : "") + ">" + h + ":00 Uhr</option>").join("") + "</select></div>" +
     (usesHolidays ? '<label class="check"><input type="checkbox" id="m_hol"' + (cfg.remind_holidays ? " checked" : "") + "> Auch vor Weihnachten & Co. erinnern (für Geschenke)</label>" : "") +
     '<div class="flab" style="margin-top:16px">Push-Nachricht auf diesem Handy</div><div id="pushbox" class="small">Wird geprüft …</div>' +
-    '<div class="flab" style="margin-top:16px">E-Mail (optional)</div>' +
-    (cfg.email_ready
-      ? (S.me ? '<div class="two"><input id="m_mail" type="email" inputmode="email" autocomplete="email" placeholder="Adresse von ' + esc(S.me) + '" value="' + esc(myMail) + '"><button class="btn sm" id="m_mailsave">Speichern</button></div>' +
-          (myMail ? '<button class="linkbtn" id="m_mailtest">Test-Mail schicken</button>' : "") +
-          '<div class="small" style="margin-top:4px">Die Adresse muss bei Cloudflare einmal bestätigt sein.</div>'
-        : '<div class="small">Bitte oben auswählen, wem dieses Handy gehört.</div>')
-      : '<div class="small">Ist noch nicht eingerichtet – dafür braucht es eine eigene Internet-Adresse (Domain) bei Cloudflare. Push-Nachrichten und Kalender funktionieren auch ohne.</div>') +
     '<div class="flab" style="margin-top:16px">Im Handy-Kalender anzeigen</div><div id="calbox"><button class="btn ghost block" id="m_cal">Kalender-Abo einrichten</button></div>' +
     '<div class="hr"></div><div class="flab">Passwort ändern</div>' +
     '<input id="m_old" type="password" autocomplete="current-password" placeholder="Aktuelles Passwort" style="margin-bottom:8px">' +
@@ -672,11 +714,6 @@ function openMenu() {
   };
   $("m_hour").onchange = () => saveSettings({ remind_hour: Number($("m_hour").value) });
   if ($("m_hol")) $("m_hol").onchange = () => saveSettings({ remind_holidays: $("m_hol").checked });
-  if ($("m_mailsave")) $("m_mailsave").onclick = async () => { if (await saveSettings({ email: { person: S.me, address: $("m_mail").value.trim() } })) openMenu(); };
-  if ($("m_mailtest")) $("m_mailtest").onclick = async e => {
-    e.target.disabled = true;
-    try { await api("POST", "/api/email/test", { person: S.me }); toast("Test-Mail ist unterwegs"); } catch (err) { toast(err.message); } finally { e.target.disabled = false; }
-  };
   $("m_cal").onclick = () => showCalendar(false);
   $("m_pw").onclick = async e => {
     const b = e.target; b.disabled = true;
@@ -749,6 +786,9 @@ async function drawPush() {
   if ($("p_test")) $("p_test").onclick = e => { busy(e.target, "Gesendet …"); currentSub().then(s => api("POST", "/api/push/test", { endpoint: s.endpoint })).then(() => toast("Test-Nachricht ist unterwegs")).catch(err => toast(err.message)).finally(drawPush); };
   if ($("p_off")) $("p_off").onclick = e => { busy(e.target, "…"); disablePush().then(() => { toast("Push-Nachrichten aus"); drawPush(); }); };
 }
+
+// Wer sich normalerweise ums Geschenk kümmert: beim Ehepartner der andere, sonst die Voreinstellung der Person
+const defaultWho = p => p ? (p.self ? (S.people.find(n => n !== p.self) || "") : (p.responsible || "")) : "";
 
 // Personenseite öffnen; „Zurück“ führt zur Ansicht, von der man kam
 function goPerson(pid, created) {

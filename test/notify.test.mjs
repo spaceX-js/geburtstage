@@ -1,10 +1,10 @@
-// Testet Erinnerungen, Push-Versand, E-Mail und Kalender-Abo.
+// Testet Erinnerungen, Push-Versand und Kalender-Abo.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import worker, { loadState } from "../src/index.js";
-import { dueReminders, runReminders, buildIcs, reminderConfig, checkDays, buildEmail } from "../src/notify.js";
+import { dueReminders, runReminders, buildIcs, reminderConfig, checkDays } from "../src/notify.js";
 import { b64u } from "../src/push.js";
 
 function makeD1() {
@@ -21,19 +21,18 @@ const form = o => { const fd = new FormData(); for (const k in o) fd.set(k, o[k]
 const post = (env, ck, path, body) => call(env, path, { method: "POST", headers: { Cookie: ck, "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const get = (env, ck, path) => call(env, path, { headers: { Cookie: ck } });
 async function ready(extra = {}) {
-  const sent = [], mails = [];
-  const env = { DB: makeD1(), ASSETS, PUSH_FETCH: async (u, o) => { sent.push({ u, o }); return new Response(null, { status: 201 }); },
-    EMAIL: { send: async m => { mails.push(m); return { messageId: "1" }; } }, MAIL_FROM: "gb@example.org", ...extra };
+  const sent = [];
+  const env = { DB: makeD1(), ASSETS, PUSH_FETCH: async (u, o) => { sent.push({ u, o }); return new Response(null, { status: 201 }); }, ...extra };
   const res = await call(env, "/login", { method: "POST", body: form({ passwort: "geheim123", passwort2: "geheim123" }) });
-  return { env, ck: res.headers.get("Set-Cookie").split(";")[0], sent, mails };
+  return { env, ck: res.headers.get("Set-Cookie").split(";")[0], sent };
 }
 async function fakeSub() {
   const kp = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
   return { endpoint: "https://push.example.com/abc", keys: { p256dh: b64u(await crypto.subtle.exportKey("raw", kp.publicKey)), auth: b64u(crypto.getRandomValues(new Uint8Array(16))) } };
 }
 
-const P = (o) => ({ id: "p", name: "Anna", bday_day: null, bday_month: null, bday_year: null, holidays: [], extra: [], remind: "", budget_min: null, budget_max: null, ...o });
-const cfg = { days: [30, 15, 7, 0], hour: 9, holidays: true, emails: {} };
+const P = (o) => ({ id: "p", name: "Anna", bday_day: null, bday_month: null, bday_year: null, holidays: [], extra: [], remind: "", budgets: {}, self: "", ...o });
+const cfg = { days: [30, 15, 7, 0], hour: 9, holidays: true };
 
 test("fällige Erinnerungen: Vorlauf, am Tag selbst, nur am Tag, aus", () => {
   const persons = [
@@ -71,22 +70,20 @@ test("eigene Termine", () => {
 });
 
 test("Einstellungen lesen", () => {
-  assert.deepEqual(reminderConfig({}), { days: [30, 15, 7, 0], hour: 9, holidays: true, emails: {} });
+  assert.deepEqual(reminderConfig({}), { days: [30, 15, 7, 0], hour: 9, holidays: true });
   assert.deepEqual(reminderConfig({ remind_days: "[1,3]", remind_hour: "7", remind_holidays: "0" }).days, [3, 1]);
   assert.equal(checkDays([1, 2, 3, 4, 5, 6, 7]), null);
   assert.equal(checkDays([-1]), null);
   assert.deepEqual(checkDays([0, 7, 7]), [7, 0]);
-  assert.equal(buildEmail([{ title: "🎂 Heute hat Ben Geburtstag", body: "" }], "").subject, "Heute hat Ben Geburtstag");
 });
 
-test("stündlicher Lauf: erst ab der Uhrzeit, jede Erinnerung nur einmal, Push und E-Mail", async () => {
-  const { env, ck, sent, mails } = await ready();
+async function fakeSubAt(path) { const s = await fakeSub(); s.endpoint = "https://push.example.com/" + path; return s; }
+
+test("stündlicher Lauf: erst ab der Uhrzeit, jede Erinnerung nur einmal", async () => {
+  const { env, ck, sent } = await ready();
   await post(env, ck, "/api/person", { id: "a", name: "Anna", bday_day: 22, bday_month: 11, bday_year: 1996 });
   await post(env, ck, "/api/person", { id: "b", name: "Ben", bday_day: 15, bday_month: 11 });
-  await post(env, ck, "/api/push/subscribe", { ...(await fakeSub()), person: "Jonas" });
-  let r = await post(env, ck, "/api/settings", { email: { person: "Clara", address: "clara@example.org" } });
-  assert.equal(r.status, 200);
-  assert.equal((await post(env, ck, "/api/settings", { email: { person: "Clara", address: "kaputt" } })).status, 400);
+  await post(env, ck, "/api/push/subscribe", { ...(await fakeSubAt("j")), person: "Jonas" });
 
   // 15.11.2026, 7:30 Uhr in Berlin (6:30 UTC) – noch zu früh
   assert.equal((await runReminders(env, new Date("2026-11-15T06:30:00Z"), loadState)).length, 0);
@@ -95,10 +92,6 @@ test("stündlicher Lauf: erst ab der Uhrzeit, jede Erinnerung nur einmal, Push u
   assert.equal(out.length, 2);
   assert.equal(sent.length, 2);
   assert.equal(sent[0].o.headers["Content-Encoding"], "aes128gcm");
-  assert.equal(mails.length, 1);
-  assert.equal(mails[0].to, "clara@example.org");
-  assert.equal(mails[0].from, "gb@example.org");
-  assert.match(mails[0].subject, /^2 Erinnerungen: Heute hat Ben Geburtstag · Anna hat in 7 Tagen Geburtstag$/);
   // eine Stunde später: nichts doppelt
   out = await runReminders(env, new Date("2026-11-15T09:05:00Z"), loadState);
   assert.equal(out.length, 0); assert.equal(sent.length, 2);
@@ -109,32 +102,64 @@ test("stündlicher Lauf: erst ab der Uhrzeit, jede Erinnerung nur einmal, Push u
   assert.deepEqual(out.map(x => x.title), ["Anna hat in 6 Tagen Geburtstag"]);
 });
 
-test("ohne E-Mail-Einrichtung: nur Push, Test-Mail meldet Fehler", async () => {
-  const { env, ck, mails } = await ready({ EMAIL: undefined });
-  const st = await (await get(env, ck, "/api/state")).json();
-  assert.equal(st.settings.email_ready, false);
-  assert.deepEqual(st.settings.remind_days, [30, 15, 7, 0]);
-  await post(env, ck, "/api/settings", { email: { person: "Jonas", address: "j@example.org" } });
-  assert.equal((await post(env, ck, "/api/email/test", { person: "Jonas" })).status, 400);
-  await post(env, ck, "/api/person", { id: "b", name: "Ben", bday_day: 15, bday_month: 11 });
-  assert.equal((await runReminders(env, new Date("2026-11-15T10:00:00Z"), loadState)).length, 1);
-  assert.equal(mails.length, 0);
+test("Ehepaar: Geschenke bleiben geheim, eigener Geburtstag ohne Erinnerung, Hochzeitstag nur einmal", () => {
+  const hz = (id) => [{ id, label: "Hochzeitstag", d: 22, m: 11, y: 2024 }];
+  const persons = [
+    P({ id: "j", name: "Jonas", self: "Jonas", bday_day: 22, bday_month: 11, holidays: ["weihnachten"], extra: hz("hj"), budgets: { geburtstag: { max: 100 } } }),
+    P({ id: "c", name: "Clara", self: "Clara", bday_day: 22, bday_month: 11, holidays: ["weihnachten"], extra: hz("hc") })
+  ];
+  const gifts = [
+    { person_id: "j", occasion: "geburtstag", year: 2026, title: "Uhr", status: "gekauft" },          // Claras Geschenk für Jonas
+    { person_id: "c", occasion: "x:hc", year: 2026, title: "Blumen", status: "idee" }                 // Jonas' Geschenk für Clara
+  ];
+  const forJonas = dueReminders(persons, gifts, [], cfg, "2026-11-15", "Jonas");
+  assert.deepEqual(forJonas.map(x => x.title).sort(), ["Clara hat in 7 Tagen Geburtstag", "💍 Euer 2. Hochzeitstag in 7 Tagen"]);
+  assert.doesNotMatch(JSON.stringify(forJonas), /Uhr/);                 // sein eigenes Geschenk sieht er nicht
+  const hzJ = forJonas.find(x => /Hochzeitstag/.test(x.title));
+  assert.match(hzJ.body, /Geschenk: Blumen/);                           // seins für Clara schon
+  assert.equal(hzJ.url, "/#p=c");
+  const forClara = dueReminders(persons, gifts, [], cfg, "2026-11-15", "Clara");
+  assert.match(forClara.find(x => x.title.startsWith("Jonas")).body, /Geschenk: Uhr \(gekauft\)/);
+  assert.doesNotMatch(JSON.stringify(forClara), /Blumen/);
+  // unbekanntes Handy: keine Geschenk-Infos über die beiden
+  const anon = dueReminders(persons, gifts, [], cfg, "2026-11-15", "");
+  assert.doesNotMatch(JSON.stringify(anon), /Uhr|Blumen|Budget/);
+  assert.equal(anon.filter(x => /Hochzeitstag/.test(x.title)).length, 1);
+  assert.match(anon.find(x => /Hochzeitstag/.test(x.title)).title, /von Jonas & Clara/);
+  // Weihnachten: Jonas sieht nur Clara in der Liste
+  const xmas = dueReminders(persons, gifts, [], cfg, "2026-11-24", "Jonas");
+  assert.equal(xmas[0].body, "Geschenke für Clara · 0 von 1 geplant");
 });
 
-test("Test-Push und Test-Mail", async () => {
-  const { env, ck, sent, mails } = await ready();
+test("Budget je Anlass in der Erinnerung", () => {
+  const p = P({ id: "a", name: "Anna", bday_day: 22, bday_month: 11, budgets: { geburtstag: { min: 20, max: 40 } } });
+  const r = dueReminders([p], [], [], cfg, "2026-11-15", "Jonas");
+  assert.match(r[0].body, /Noch kein Geschenk geplant · Budget 20–40 €/);
+});
+
+test("Push geht je Person mit eigener Fassung raus", async () => {
+  const { env, ck, sent } = await ready();
+  await post(env, ck, "/api/person", { id: "j", name: "Jonas", self: "Jonas", bday_day: 22, bday_month: 11 });
+  await post(env, ck, "/api/push/subscribe", { ...(await fakeSubAt("jonas")), person: "Jonas" });
+  await post(env, ck, "/api/push/subscribe", { ...(await fakeSubAt("clara")), person: "Clara" });
+  const out = await runReminders(env, new Date("2026-11-15T09:00:00Z"), loadState);
+  assert.deepEqual(out.map(x => x.viewer), ["Clara"]);                  // Jonas wird nicht an seinen eigenen Geburtstag erinnert
+  assert.deepEqual(sent.map(x => x.u), ["https://push.example.com/clara"]);
+});
+
+test("Test-Push", async () => {
+  const { env, ck, sent } = await ready();
   const sub = await fakeSub();
   assert.equal((await post(env, ck, "/api/push/test", { endpoint: sub.endpoint })).status, 400);
   await post(env, ck, "/api/push/subscribe", { ...sub, person: "Clara" });
   assert.equal((await post(env, ck, "/api/push/test", { endpoint: sub.endpoint })).status, 200);
   assert.equal(sent.length, 1);
-  await post(env, ck, "/api/settings", { email: { person: "Jonas", address: "j@example.org" } });
-  assert.equal((await post(env, ck, "/api/email/test", { person: "Jonas" })).status, 200);
-  assert.equal(mails[0].to, "j@example.org");
 });
 
 test("Kalender-Abo: nur mit geheimem Link, neuer Link macht alten ungültig", async () => {
   const { env, ck } = await ready();
+  await post(env, ck, "/api/person", { id: "j", name: "Jonas", self: "Jonas", extra: [{ id: "h1", label: "Hochzeitstag", d: 5, m: 4, y: 2024 }] });
+  await post(env, ck, "/api/person", { id: "c", name: "Clara", self: "Clara", extra: [{ id: "h2", label: "Hochzeitstag", d: 5, m: 4, y: 2024 }] });
   await post(env, ck, "/api/person", { id: "a", name: "Anna, die Große", bday_day: 3, bday_month: 12, bday_year: 1996, holidays: ["weihnachten"] });
   const { url } = await (await get(env, ck, "/api/calendar")).json();
   assert.match(url, /^https:\/\/gb\.test\/kalender\/[a-f0-9]{32}\.ics$/);
@@ -147,6 +172,7 @@ test("Kalender-Abo: nur mit geheimem Link, neuer Link macht alten ungültig", as
   const ics = await res.text();
   assert.match(ics, /SUMMARY:🎂 Anna\\, die Große \(\d+\)/);
   assert.doesNotMatch(ics, /Weihnachten/);
+  assert.equal((ics.match(/SUMMARY:💍 (Jonas & Clara|Clara & Jonas): 3\. Hochzeitstag/g) || []).length, 1);
   assert.equal((await call(env, "/kalender/" + "0".repeat(32) + ".ics")).status, 404);
   const neu = await (await post(env, ck, "/api/calendar/new", {})).json();
   assert.notEqual(neu.url, url);

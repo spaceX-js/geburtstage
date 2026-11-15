@@ -1,4 +1,4 @@
-// Erinnerungen: welche fällig sind, Push-Nachrichten, E-Mail und Kalender-Abo.
+// Erinnerungen: welche fällig sind, Push-Nachrichten und Kalender-Abo.
 // runReminders() läuft stündlich (Cron in wrangler.jsonc) und verschickt ab der eingestellten Uhrzeit alles, was heute fällig ist.
 import * as O from "../public/occasions.js";
 import { generateVapid, sendPush } from "./push.js";
@@ -12,10 +12,8 @@ export function reminderConfig(s) {
   let days = DEFAULT_DAYS;
   try { const d = JSON.parse(s.remind_days || "null"); if (Array.isArray(d)) days = checkDays(d) || DEFAULT_DAYS; } catch (e) {}
   const h = Number(s.remind_hour);
-  let emails = {};
-  try { const e = JSON.parse(s.emails || "{}"); if (e && typeof e === "object") emails = e; } catch (e) {}
   return { days, hour: Number.isInteger(h) && h >= 0 && h <= 23 && s.remind_hour !== undefined ? h : DEFAULT_HOUR,
-    holidays: s.remind_holidays !== "0", emails };
+    holidays: s.remind_holidays !== "0" };
 }
 // Vorlauf in Tagen: 0 (am Tag selbst) bis 90, höchstens 6 verschiedene
 export function checkDays(list) {
@@ -28,54 +26,79 @@ export function checkDays(list) {
   }
   return out.sort((a, b) => b - a);
 }
-export const EMAIL_RE = /^[^\s@<>()",;:]{1,64}@[A-Za-z0-9.-]{1,180}\.[A-Za-z]{2,24}$/;
 
 /* ---------- Welche Erinnerungen sind heute fällig? ---------- */
 const HOL = new Set(O.HOLIDAY_KEYS);
-function giftLine(p, o, gifts, ideas, inDays) {
-  const gs = gifts.filter(g => g.person_id === p.id && g.occasion === o.key && g.year === o.year);
+// Budget einer Person für einen Anlass als Text ("bis 100 €", "50–80 €") oder ""
+export function budgetFor(p, key) {
+  const b = p && p.budgets && p.budgets[key];
+  if (!b) return "";
+  const a = b.min ?? null, z = b.max ?? null;
+  if (a != null && z != null) return a === z ? a + " €" : a + "–" + z + " €";
+  if (z != null) return "bis " + z + " €";
+  if (a != null) return "ab " + a + " €";
+  return "";
+}
+function giftLine(p, key, year, gifts, ideas, inDays) {
+  const gs = gifts.filter(g => g.person_id === p.id && g.occasion === key && g.year === year);
   const real = gs.filter(g => g.status !== "nichts");
   const label = { idee: "Idee", gekauft: "gekauft", verpackt: "verpackt", ueberreicht: "überreicht" };
   if (real.length) return "Geschenk: " + real.map(g => g.title + " (" + (label[g.status] || g.status) + ")").join(", ");
   if (gs.length) return "";
+  const budget = budgetFor(p, key);
   const n = ideas.filter(i => i.person_id === p.id).length;
-  if (n) return "Noch kein Geschenk – " + (n === 1 ? "1 Idee" : n + " Ideen") + " notiert";
-  const usesGifts = p.budget_min != null || p.budget_max != null || gifts.some(g => g.person_id === p.id);
-  return usesGifts && inDays >= 3 ? "Noch kein Geschenk geplant" : "";
+  if (n) return "Noch kein Geschenk – " + (n === 1 ? "1 Idee" : n + " Ideen") + " notiert" + (budget ? " · Budget " + budget : "");
+  const usesGifts = budget || gifts.some(g => g.person_id === p.id);
+  return usesGifts && inDays >= 3 ? "Noch kein Geschenk geplant" + (budget ? " · Budget " + budget : "") : "";
 }
 const inText = n => n === 0 ? "heute" : n === 1 ? "morgen" : "in " + n + " Tagen";
 
-export function dueReminders(persons, gifts, ideas, cfg, today) {
+// Fällige Erinnerungen für einen Empfänger („viewer“ = "Jonas", "Clara" oder "" wenn unbekannt).
+// Geschenk-Infos über den Empfänger selbst bleiben geheim; an den eigenen Geburtstag wird man nicht erinnert.
+export function dueReminders(persons, gifts, ideas, cfg, today, viewer = "") {
   const max = Math.max(0, ...cfg.days);
-  const list = O.upcoming(persons, today, max + 1);
+  const list = O.mergeCouple(O.upcoming(persons, today, max + 1), persons);
+  const me = persons.find(p => p.self && p.self === viewer);
+  const partnerId = O.partnerOf(persons, viewer);
+  // Geschenke über diese Personen darf der Empfänger nicht sehen (ohne bekannten Empfänger: über beide Ehepartner nicht)
+  const secret = new Set(persons.filter(p => p.self && (!viewer || p.self === viewer)).map(p => p.id));
   const out = [], holGroups = new Map();
   for (const o of list) {
     const p = persons.find(x => x.id === o.personId);
     if (!p || p.remind === "aus") continue;
     if (HOL.has(o.key)) {
-      if (!cfg.holidays || o.inDays === 0 || !cfg.days.includes(o.inDays)) continue;
+      if (!cfg.holidays || o.inDays === 0 || !cfg.days.includes(o.inDays) || secret.has(p.id)) continue;
       const k = o.key + "|" + o.date;
       if (!holGroups.has(k)) holGroups.set(k, { o, persons: [] });
       holGroups.get(k).persons.push(p);
       continue;
     }
+    if (me && o.key === "geburtstag" && p.id === me.id) continue;
     const leads = p.remind === "tag" ? [0] : cfg.days;
     if (!leads.includes(o.inDays)) continue;
     const n = o.inDays, bday = o.key === "geburtstag";
-    let title;
-    if (bday) title = n === 0 ? (o.age ? "🎂 Heute wird " + p.name + " " + o.age : "🎂 Heute hat " + p.name + " Geburtstag")
+    let title, giftP = p, giftKey = o.key, url = "/#p=" + p.id;
+    if (o.couple) {
+      const ours = me && o.members.some(m => m.personId === me.id);
+      const names = o.members.map(m => persons.find(x => x.id === m.personId).name).join(" & ");
+      title = ours ? "💍 " + (n === 0 ? "Heute ist euer " : "Euer ") + O.occTitle(o) + (n === 0 ? "" : " " + inText(n)) : (n === 0 ? "Heute: " : "") + O.occTitle(o) + " von " + names + (n === 0 ? "" : " " + inText(n));
+      const pm = o.members.find(m => m.personId === partnerId);
+      giftP = pm ? persons.find(x => x.id === pm.personId) : null; giftKey = pm ? pm.key : null;
+      url = pm ? "/#p=" + pm.personId : url;
+    } else if (bday) title = n === 0 ? (o.age ? "🎂 Heute wird " + p.name + " " + o.age : "🎂 Heute hat " + p.name + " Geburtstag")
       : n === 1 ? "🎂 Morgen hat " + p.name + " Geburtstag" : p.name + " hat in " + n + " Tagen Geburtstag";
     else title = (n === 0 ? "Heute: " : "") + O.occTitle(o) + " von " + p.name + (n === 0 ? "" : " " + inText(n));
     const parts = [];
     if (n > 0) parts.push(O.fmtDate(o.date, { weekday: true }) + (bday && o.age ? " · wird " + o.age : ""));
     if (o.round) parts.push(bday ? "Runder Geburtstag!" : "Jubiläum!");
     if (n === 0 && bday) parts.push("Gratulieren nicht vergessen 🎉");
-    const g = giftLine(p, o, gifts, ideas, n); if (g) parts.push(g);
-    out.push({ key: p.id + "|" + o.key + "|" + o.date + "|" + n, title, body: parts.join("\n"), url: "/#p=" + p.id, tag: "gb-" + p.id + "-" + o.key, date: o.date, inDays: n });
+    if (giftP && !secret.has(giftP.id)) { const g = giftLine(giftP, giftKey, o.year, gifts, ideas, n); if (g) parts.push(g); }
+    out.push({ key: (o.couple ? "paar" : p.id) + "|" + o.key + "|" + o.date + "|" + n + "|" + (viewer || "-"), title, body: parts.join("\n"), url,
+      tag: "gb-" + p.id + "-" + o.key, date: o.date, inDays: n });
   }
   for (const { o, persons: ps } of holGroups.values()) {
     const planned = ps.filter(p => gifts.some(g => g.person_id === p.id && g.occasion === o.key && g.year === o.year)).length;
-    out.push({ key: "hol|" + o.key + "|" + o.date + "|" + o.inDays, title: "🎁 " + o.label + " " + inText(o.inDays),
+    out.push({ key: "hol|" + o.key + "|" + o.date + "|" + o.inDays + "|" + (viewer || "-"), title: "🎁 " + o.label + " " + inText(o.inDays),
       body: "Geschenke für " + ps.map(p => p.name).join(", ") + " · " + planned + " von " + ps.length + " geplant",
       url: "/#geschenke", tag: "gb-" + o.key, date: o.date, inDays: o.inDays });
   }
@@ -108,23 +131,6 @@ export async function deliver(env, subs, message, origin) {
   }));
 }
 
-/* ---------- E-Mail ---------- */
-// Braucht in wrangler.jsonc eine send_email-Bindung „EMAIL“ und die Variable MAIL_FROM (Absender auf einer eigenen Domain bei Cloudflare).
-export const emailReady = env => !!(env.EMAIL && env.MAIL_FROM);
-const escHtml = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-export function buildEmail(items, origin) {
-  const plain = t => t.replace(/^\p{Extended_Pictographic}️?\s*/u, "");
-  const subject = items.length === 1 ? plain(items[0].title) : items.length + " Erinnerungen: " + items.map(i => plain(i.title)).join(" · ");
-  const text = items.map(i => "• " + i.title + (i.body ? "\n  " + i.body.replace(/\n/g, "\n  ") : "")).join("\n\n") + "\n\n" + (origin ? "Zur App: " + origin + "/" : "");
-  const html = '<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.45;color:#1f1b18">' +
-    items.map(i => '<p style="margin:0 0 14px"><b>' + escHtml(i.title) + "</b>" + (i.body ? "<br>" + escHtml(i.body).replace(/\n/g, "<br>") : "") + "</p>").join("") +
-    (origin ? '<p style="margin:18px 0 0"><a href="' + escHtml(origin) + '/" style="color:#b4493a">Geburtstage öffnen</a></p>' : "") + "</div>";
-  return { subject: subject.slice(0, 200), text, html };
-}
-export async function sendMail(env, to, mail) {
-  await env.EMAIL.send({ to, from: env.MAIL_FROM, subject: mail.subject, text: mail.text, html: mail.html });
-}
-
 /* ---------- Stündlicher Lauf ---------- */
 function hourIn(tz, now) {
   try { return Number(new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", hourCycle: "h23" }).format(now)); } catch (e) { return now.getUTCHours(); }
@@ -133,34 +139,32 @@ export async function runReminders(env, now = new Date(), loadState) {
   const settings = await getSettings(env);
   const cfg = reminderConfig(settings);
   if (hourIn(TZ, now) < cfg.hour) return [];
+  const subs = (await env.DB.prepare("SELECT endpoint, p256dh, auth, person FROM push_subs").all()).results;
+  if (!subs.length) return [];
   const today = O.todayIn(TZ, now);
   const { persons, gifts, ideas } = await loadState(env);
-  const items = dueReminders(persons, gifts, ideas, cfg, today);
-  if (!items.length) return [];
-  // schon verschickte aussortieren
-  const done = new Set();
-  for (let i = 0; i < items.length; i += 50) {
-    const part = items.slice(i, i + 50).map(x => x.key);
-    const { results } = await env.DB.prepare("SELECT key FROM reminders_sent WHERE key IN (" + part.map(() => "?").join(",") + ")").bind(...part).all();
-    for (const r of results) done.add(r.key);
-  }
-  const fresh = items.filter(x => !done.has(x.key));
-  if (!fresh.length) return [];
-  const at = now.toISOString();
-  await env.DB.batch(fresh.map(x => env.DB.prepare("INSERT OR IGNORE INTO reminders_sent (key, at) VALUES (?, ?)").bind(x.key, at)));
   const origin = settings.origin || "";
-  // Push an alle angemeldeten Geräte (beide)
-  const subs = (await env.DB.prepare("SELECT endpoint, p256dh, auth, person FROM push_subs").all()).results;
-  if (subs.length) for (const x of fresh) await deliver(env, subs, { title: x.title, body: x.body, tag: x.tag, url: x.url }, origin || "https://geburtstage.app");
-  // E-Mail: eine Sammel-Mail pro Adresse
-  if (emailReady(env)) {
-    const mail = buildEmail(fresh, origin);
-    for (const addr of Object.values(cfg.emails)) {
-      if (typeof addr === "string" && EMAIL_RE.test(addr)) { try { await sendMail(env, addr, mail); } catch (e) { console.log("E-Mail an " + addr + " fehlgeschlagen: " + (e && e.message)); } }
+  const sentNow = [];
+  // Jede Person bekommt ihre eigene Fassung (ohne Geschenk-Infos über sich selbst)
+  const viewers = [...new Set(subs.map(s => s.person || ""))];
+  for (const viewer of viewers) {
+    const items = dueReminders(persons, gifts, ideas, cfg, today, viewer);
+    if (!items.length) continue;
+    const done = new Set();
+    for (let i = 0; i < items.length; i += 50) {
+      const part = items.slice(i, i + 50).map(x => x.key);
+      const { results } = await env.DB.prepare("SELECT key FROM reminders_sent WHERE key IN (" + part.map(() => "?").join(",") + ")").bind(...part).all();
+      for (const r of results) done.add(r.key);
     }
+    const fresh = items.filter(x => !done.has(x.key));
+    if (!fresh.length) continue;
+    await env.DB.batch(fresh.map(x => env.DB.prepare("INSERT OR IGNORE INTO reminders_sent (key, at) VALUES (?, ?)").bind(x.key, now.toISOString())));
+    const mine = subs.filter(s => (s.person || "") === viewer);
+    for (const x of fresh) await deliver(env, mine, { title: x.title, body: x.body, tag: x.tag, url: x.url }, origin || "https://geburtstage.app");
+    sentNow.push(...fresh.map(x => ({ ...x, viewer })));
   }
   await env.DB.prepare("DELETE FROM reminders_sent WHERE at < ?").bind(new Date(now.getTime() - 400 * 86400000).toISOString()).run();
-  return fresh;
+  return sentNow;
 }
 
 /* ---------- Kalender-Abo (iCal) ---------- */
@@ -178,14 +182,16 @@ function fold(line) {
 }
 export function buildIcs(persons, today, now = new Date()) {
   const from = O.addDays(today, -60);
-  const list = O.upcoming(persons, from, 60 + 731).filter(o => !HOL.has(o.key));
+  const list = O.mergeCouple(O.upcoming(persons, from, 60 + 731).filter(o => !HOL.has(o.key)), persons);
   const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Geburtstage//DE", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
     "X-WR-CALNAME:Geburtstage", "X-WR-TIMEZONE:Europe/Berlin", "REFRESH-INTERVAL;VALUE=DURATION:PT6H", "X-PUBLISHED-TTL:PT6H"];
   for (const o of list) {
     const p = persons.find(x => x.id === o.personId);
     const d = o.date.replace(/-/g, ""), next = O.addDays(o.date, 1).replace(/-/g, "");
-    const summary = o.key === "geburtstag" ? "🎂 " + p.name + (o.age ? " (" + o.age + ")" : "") : "⭐ " + p.name + ": " + O.occTitle(o);
+    const summary = o.key === "geburtstag" ? "🎂 " + p.name + (o.age ? " (" + o.age + ")" : "")
+      : o.couple ? "💍 " + o.members.map(m => persons.find(x => x.id === m.personId).name).join(" & ") + ": " + O.occTitle(o)
+      : "⭐ " + p.name + ": " + O.occTitle(o);
     lines.push("BEGIN:VEVENT", "UID:" + p.id + "-" + o.key.replace(":", "-") + "-" + o.year + "@geburtstage", "DTSTAMP:" + stamp,
       "DTSTART;VALUE=DATE:" + d, "DTEND;VALUE=DATE:" + next, "SUMMARY:" + icsEsc(summary), "TRANSP:TRANSPARENT", "END:VEVENT");
   }

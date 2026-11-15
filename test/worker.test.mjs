@@ -75,7 +75,7 @@ test("Person, Idee und Geschenk anlegen, ändern, löschen", async () => {
 
   let r = await post(env, ck, "/api/person", { id: "p1", name: "  Anna  Müller ", relation: "Familie", bday_day: 3, bday_month: 1, bday_year: 1997,
     holidays: ["weihnachten", "quatsch"], extra: [{ id: "h1", label: "Hochzeitstag", d: 1, m: 6, y: 2020 }], interests: ["Kochen", "kochen", "Wandern"],
-    budget_min: 20, budget_max: 50, responsible: "Clara" });
+    budgets: { geburtstag: { min: 20, max: 50 }, weihnachten: { max: 30 }, ostern: {} }, responsible: "Clara", self: "Clara" });
   assert.equal(r.status, 200);
   r = await post(env, ck, "/api/idea", { id: "i1", person_id: "p1", text: "Kochkurs", price: 80, link: "javascript:alert(1)", added_by: "Jonas" });
   assert.equal(r.status, 200);
@@ -89,6 +89,8 @@ test("Person, Idee und Geschenk anlegen, ändern, löschen", async () => {
   assert.deepEqual(p.interests, ["Kochen", "Wandern"]);
   assert.deepEqual(p.extra, [{ id: "h1", label: "Hochzeitstag", d: 1, m: 6, y: 2020 }]);
   assert.equal(p.responsible, "Clara");
+  assert.deepEqual(p.budgets, { geburtstag: { min: 20, max: 50 }, weihnachten: { max: 30 } });
+  assert.equal(p.self, "Clara");
   assert.equal(st.ideas[0].link, "");                 // gefährlicher Link wird verworfen
   assert.equal(st.gifts[0].who, "");
   assert.equal(st.gifts[0].rating, 3);
@@ -96,6 +98,12 @@ test("Person, Idee und Geschenk anlegen, ändern, löschen", async () => {
   // gleicher Stand → nur "same"
   const same = await (await get(env, ck, "/api/state?rev=" + st.rev)).json();
   assert.deepEqual(same, { rev: st.rev, same: true });
+
+  // „Das bin ich“ gibt es nur einmal pro Nutzer
+  await post(env, ck, "/api/person", { id: "p2", name: "Clara zwei", self: "Clara" });
+  st = await (await get(env, ck, "/api/state")).json();
+  assert.deepEqual(st.persons.map(x => [x.id, x.self]).sort(), [["p1", ""], ["p2", "Clara"]]);
+  await post(env, ck, "/api/person/delete", { id: "p2" });
 
   // ändern
   await post(env, ck, "/api/gift", { id: "g1", person_id: "p1", occasion: "geburtstag", year: 2027, title: "Kerze", status: "gekauft" });
@@ -123,7 +131,9 @@ test("Prüfung der Eingaben", () => {
   assert.equal(checkPerson({ id: "p", name: "X", bday_day: 31, bday_month: 4 }), null);
   assert.equal(checkPerson({ id: "p", name: "X", bday_day: 3 }), null);
   assert.equal(checkPerson({ id: "p", name: "X", bday_year: 1990 }), null);
-  assert.equal(checkPerson({ id: "p", name: "X", budget_min: 50, budget_max: 20 }), null);
+  assert.equal(checkPerson({ id: "p", name: "X", budgets: { geburtstag: { min: 50, max: 20 } } }), null);
+  assert.equal(checkPerson({ id: "p", name: "X", budgets: { quatsch: { max: 20 } } }), null);
+  assert.equal(checkPerson({ id: "p", name: "X", self: "Fremder" }).self, "");
   assert.equal(checkPerson({ id: "p", name: "X", bday_day: 1, bday_month: 1, bday_year: 2999 }), null);
   assert.equal(checkGift({ id: "g", person_id: "p", occasion: "irgendwas", year: 2026, title: "X" }), null);
   assert.equal(checkGift({ id: "g", person_id: "p", occasion: "geburtstag", year: 2026, title: "" }), null);
