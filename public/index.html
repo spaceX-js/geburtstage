@@ -39,7 +39,7 @@ h1{font-size:26px;margin:0;letter-spacing:-.02em;min-width:0;overflow:hidden;tex
 .iconbtn svg{width:23px;height:23px;display:block}
 .backbtn{background:none;border:0;color:var(--acc);font-weight:600;font-size:16px;padding:6px 0;cursor:pointer;flex:none}
 .seg{display:flex;background:var(--line);border-radius:11px;padding:3px;gap:3px}
-.seg button{flex:1;border:0;background:none;border-radius:9px;padding:8px 0;font-weight:600;font-size:15px;color:var(--mute);cursor:pointer}
+.seg button{flex:1;border:0;background:none;border-radius:9px;padding:8px 0;font-weight:600;font-size:14.5px;color:var(--mute);cursor:pointer}
 .seg button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
 
 /* Abschnitte & Listen */
@@ -168,6 +168,31 @@ details.more-sec[open]{padding-bottom:4px}
 .budget{display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--bg);border-radius:12px;padding:8px 12px;margin:0 0 14px;font-size:14.5px}
 .budget-edit{background:var(--bg);border-radius:12px;padding:10px 12px;margin:0 0 14px}
 .budget-edit input{background:var(--card)}
+/* Kalender */
+.calnav{display:flex;align-items:center;justify-content:space-between;margin:14px 0 8px}
+.calnav .iconbtn{font-size:28px;line-height:1;color:var(--acc);padding:2px 12px}
+.calttl{background:none;border:0;font-size:19px;font-weight:700;cursor:pointer;padding:4px 8px}
+.month{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:8px 6px}
+.grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.grid .wd{text-align:center;font-size:11.5px;color:var(--mute);font-weight:600;padding:2px 0 6px}
+.grid button{min-height:58px;border:0;background:none;border-radius:10px;padding:4px 2px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;min-width:0;overflow:hidden}
+.grid button .dn{font-size:14px;font-variant-numeric:tabular-nums;width:26px;height:26px;line-height:26px;border-radius:50%;flex:none}
+.grid button.now .dn{background:var(--ink);color:var(--bg);font-weight:700}
+.grid button.ev{background:var(--acc-soft)}
+.grid button.ev .dn{color:var(--acc);font-weight:700}
+.grid button.now.ev .dn{background:var(--acc);color:var(--acc-ink)}
+.grid button.sel{outline:2px solid var(--acc);outline-offset:-2px}
+.grid .who{font-size:10.5px;line-height:1.2;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+.grid .who.more{color:var(--mute)}
+.yeargrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+@media (min-width:520px){.yeargrid{grid-template-columns:repeat(4,1fr)}}
+.mini{display:flex;flex-direction:column;justify-content:flex-start;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 6px;cursor:pointer;text-align:left;min-width:0}
+.mini b{display:block;font-size:13px;margin:0 2px 4px}
+.mini .cnt{display:inline-block;background:var(--acc);color:var(--acc-ink);border-radius:999px;font-size:10.5px;padding:0 6px;margin-left:2px;vertical-align:1px}
+.mgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px}
+.mgrid i{font-style:normal;font-size:9px;text-align:center;line-height:15px;color:var(--mute);border-radius:50%;font-variant-numeric:tabular-nums}
+.mgrid i.ev{background:var(--acc);color:var(--acc-ink);font-weight:700}
+.mgrid i.now{outline:1.5px solid var(--ink)}
 label.check{display:flex;gap:10px;align-items:flex-start;font-size:14.5px;margin-top:12px;cursor:pointer}
 .sheet label.check input{width:20px;height:20px;flex:none;margin:1px 0 0;-webkit-appearance:checkbox;appearance:auto;accent-color:var(--acc)}
 .toast button{background:none;border:0;color:var(--acc-soft);font-weight:700;padding:6px 8px;cursor:pointer}

@@ -2,7 +2,7 @@
 // Zeigt die nächsten Geburtstage, alle Personen und (als Zusatz) Geschenk-Ideen und -Historie; speichert alles über /api/… in der Datenbank.
 import * as O from "/occasions.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 const CACHE_KEY = "geschenke.v1";
 const POLL_MS = 5000;
 const STATUS = [
@@ -162,7 +162,7 @@ function renderHead() {
   }
   const tab = (v, l) => '<button data-act="view" data-v="' + v + '" class="' + (S.view === v ? "on" : "") + '">' + l + "</button>";
   $("head").innerHTML = '<div class="title"><h1>Geburtstage' + net + '</h1><button class="iconbtn" data-act="menu" aria-label="Einstellungen">' + ICON_GEAR + "</button></div>" +
-    '<div class="seg">' + tab("upcoming", "Demnächst") + tab("all", "Alle" + (S.persons.length ? " (" + S.persons.length + ")" : "")) + tab("gifts", "🎁 Geschenke") + "</div>" +
+    '<div class="seg">' + tab("upcoming", "Demnächst") + tab("cal", "Kalender") + tab("all", "Alle") + tab("gifts", "Geschenke") + "</div>" +
     (S.view === "all" ? '<input class="searchbox" id="q" type="search" placeholder="Suchen …" value="' + esc(S.q) + '" autocomplete="off">' : "");
   const q = $("q"); if (q) q.oninput = () => { S.q = q.value; renderBody(); };
 }
@@ -171,10 +171,11 @@ function renderHead() {
 function render() { renderHead(); renderBody(); }
 function renderBody() {
   if (!S.loaded) return;
-  $("fab").innerHTML = (S.view === "upcoming" || S.view === "all") && S.persons.length ? '<button class="fab" data-act="new-person">+ Person</button>' : "";
+  $("fab").innerHTML = (S.view === "upcoming" || S.view === "all" || S.view === "cal") && S.persons.length ? '<button class="fab" data-act="new-person">+ Person</button>' : "";
   if (S.view === "person") return renderPerson();
   if (S.view === "all") return renderAll();
   if (S.view === "gifts") return renderGifts();
+  if (S.view === "cal") return renderCalendar();
   renderUpcoming();
 }
 
@@ -252,6 +253,77 @@ function bdayRow(o) {
     '<div class="date' + (o.inDays <= 7 ? " soon" : "") + '"><b>' + d + "</b><small>" + O.WEEKDAYS[O.weekday(o.date)] + "</small></div>" +
     '<div class="main"><div class="n">' + esc(p.name) + round + '</div><div class="d">' + what + " · " + O.fmtIn(o.inDays) + giftMark(o) + "</div></div>" +
     '<span class="chev">›</span></button>';
+}
+
+/* ---------- Kalender: Monat und Jahr ---------- */
+// Alle Geburtstage und eigenen Termine eines Jahres (Ehepaar-Termine nur einmal), nach Datum
+function calYear(y) {
+  const t = today();
+  const list = [];
+  for (const p of S.persons) for (const o of O.occasionsInYear(p, y)) if (birthdayOcc(o)) list.push({ ...o, personId: p.id, inDays: O.daysBetween(t, o.date) });
+  list.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.label.localeCompare(b.label));
+  return O.mergeCouple(list, S.persons);
+}
+function calState() {
+  if (!S.cal) { const { y, m } = O.parseIso(today()); S.cal = { mode: "month", y, m, day: null }; }
+  return S.cal;
+}
+const calName = o => o.couple ? "💍 " + coupleNames(o) : (person(o.personId) || {}).name || "";
+const firstName = s => String(s).replace(/^💍\s*/, "").split(" ")[0];
+function renderCalendar() {
+  const c = calState(), t = today();
+  const items = calYear(c.y);
+  const head = (label, act) => '<div class="calnav"><button class="iconbtn" data-act="cal-prev" aria-label="Zurück">‹</button><button class="calttl" data-act="' + act + '">' + label + '</button><button class="iconbtn" data-act="cal-next" aria-label="Weiter">›</button></div>';
+  let h = '<div class="seg" style="margin-top:12px"><button data-act="cal-mode" data-m="month" class="' + (c.mode === "month" ? "on" : "") + '">Monat</button>' +
+    '<button data-act="cal-mode" data-m="year" class="' + (c.mode === "year" ? "on" : "") + '">Jahr</button></div>';
+  if (c.mode === "year") {
+    h += head(String(c.y), "cal-today");
+    h += '<div class="yeargrid">';
+    for (let m = 1; m <= 12; m++) {
+      const mi = items.filter(o => O.parseIso(o.date).m === m);
+      const days = new Set(mi.map(o => O.parseIso(o.date).d));
+      h += '<button class="mini" data-act="cal-month" data-m="' + m + '"><b>' + O.MONTHS[m - 1] + (mi.length ? ' <span class="cnt">' + mi.length + "</span>" : "") + "</b>" + gridHtml(c.y, m, d => {
+        const iso = O.iso(c.y, m, d);
+        return '<i class="' + (days.has(d) ? "ev" : "") + (iso === t ? " now" : "") + '">' + d + "</i>";
+      }, true) + "</button>";
+    }
+    h += "</div>";
+    if (!items.length) h += '<div class="empty">In diesem Jahr ist nichts eingetragen.</div>';
+    $("app").innerHTML = h;
+    return;
+  }
+  // Monat
+  const mi = items.filter(o => O.parseIso(o.date).m === c.m);
+  const byDay = new Map();
+  for (const o of mi) { const d = O.parseIso(o.date).d; if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(o); }
+  h += head(O.MONTHS[c.m - 1] + " " + c.y, "cal-today");
+  h += '<div class="month">' + gridHtml(c.y, c.m, d => {
+    const iso = O.iso(c.y, c.m, d), ev = byDay.get(d) || [];
+    const cls = [ev.length ? "ev" : "", iso === t ? "now" : "", c.day === d ? "sel" : ""].filter(Boolean).join(" ");
+    return '<button class="' + cls + '" data-act="cal-day" data-d="' + d + '"><span class="dn">' + d + "</span>" +
+      ev.slice(0, 2).map(o => '<span class="who">' + (o.key === "geburtstag" ? "" : o.couple ? "💍" : "⭐") + esc(o.couple ? "Ihr" : firstName(calName(o))) + "</span>").join("") +
+      (ev.length > 2 ? '<span class="who more">+' + (ev.length - 2) + "</span>" : "") + "</button>";
+  }, false) + "</div>";
+  const shown = c.day ? (byDay.get(c.day) || []) : mi;
+  h += '<div class="sec"><b>' + (c.day ? c.day + ". " + O.MONTHS[c.m - 1] : "Im " + O.MONTHS[c.m - 1]) + "</b>" + (c.day ? '<button class="linkbtn" data-act="cal-day" data-d="0">Ganzer Monat</button>' : "") + "</div>";
+  h += shown.length ? '<div class="list">' + shown.map(calRow).join("") + "</div>" : '<div class="card small">' + (c.day ? "An diesem Tag ist nichts eingetragen." : "In diesem Monat hat niemand Geburtstag.") + "</div>";
+  $("app").innerHTML = h;
+}
+// Monatsraster (Montag zuerst); cell(d) liefert das HTML für einen Tag
+function gridHtml(y, m, cell, mini) {
+  const first = (O.weekday(O.iso(y, m, 1)) + 6) % 7, n = O.daysInMonth(y, m);
+  let h = '<div class="' + (mini ? "mgrid" : "grid") + '">' + (mini ? "" : ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].map(w => '<span class="wd">' + w + "</span>").join(""));
+  for (let i = 0; i < first; i++) h += "<span></span>";
+  for (let d = 1; d <= n; d++) h += cell(d);
+  return h + "</div>";
+}
+function calRow(o) {
+  const { d } = O.parseIso(o.date);
+  const what = o.key === "geburtstag" ? (o.age ? (o.inDays < 0 ? "wurde " : "wird ") + o.age : "Geburtstag") : esc(O.occTitle(o));
+  return '<button class="row" data-act="person" data-pid="' + esc(rowTarget(o)) + '">' +
+    '<div class="date' + (o.inDays === 0 ? " soon" : "") + '"><b>' + d + "</b><small>" + O.WEEKDAYS[O.weekday(o.date)] + "</small></div>" +
+    '<div class="main"><div class="n">' + esc(calName(o)) + (o.round ? '<span class="pill round">' + (o.key === "geburtstag" ? "rund" : "Jubiläum") + "</span>" : "") +
+    '</div><div class="d">' + what + " · " + O.fmtIn(o.inDays) + giftMark(o) + '</div></div><span class="chev">›</span></button>';
 }
 
 // Alle: nach Geburtsmonat sortiert (Januar bis Dezember), Personen ohne Geburtstag am Ende
@@ -811,6 +883,18 @@ document.addEventListener("click", e => {
   const b = e.target.closest("[data-act]"); if (!b || b.closest("#modal")) return;
   const a = b.dataset.act;
   if (a === "view") { S.view = b.dataset.v; window.scrollTo(0, 0); render(); }
+  else if (a.startsWith("cal-")) {
+    const c = calState();
+    if (a === "cal-mode") { c.mode = b.dataset.m; c.day = null; }
+    else if (a === "cal-prev" || a === "cal-next") {
+      const dir = a === "cal-prev" ? -1 : 1; c.day = null;
+      if (c.mode === "year") c.y += dir; else { c.m += dir; if (c.m < 1) { c.m = 12; c.y--; } if (c.m > 12) { c.m = 1; c.y++; } }
+    }
+    else if (a === "cal-today") { const t = O.parseIso(today()); c.y = t.y; c.m = t.m; c.day = null; }
+    else if (a === "cal-month") { c.mode = "month"; c.m = Number(b.dataset.m); c.day = null; window.scrollTo(0, 0); }
+    else if (a === "cal-day") { const d = Number(b.dataset.d); c.day = !d || c.day === d ? null : d; }
+    renderBody();
+  }
   else if (a === "filter") { S.filter = b.dataset.f; saveLocal(); renderBody(); renderHead(); }
   else if (a === "me") { setMe(b.dataset.p); render(); }
   else if (a === "menu") openMenu();
