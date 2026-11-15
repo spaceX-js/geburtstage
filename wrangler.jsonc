@@ -1,0 +1,22 @@
+{
+  "name": "geschenke",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+
+  // Seite, Skripte und Icon. Der Worker läuft zuerst, damit nur Angemeldete etwas sehen.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "geschenke-db",
+      "database_id": "5e10e514-e92e-4e17-9c10-331688c3ca78"
+    }
+  ],
+
+  "observability": { "enabled": true }
+}
