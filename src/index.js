@@ -1,4 +1,4 @@
-// Geburtstage – Cloudflare Worker (Repo „geschenke“)
+// Geburtstage – Cloudflare Worker
 // Bindungen: DB (D1-Datenbank „geburtstage-db“), ASSETS (Ordner public/), optional EMAIL + MAIL_FROM für E-Mail-Erinnerungen.
 // Das Passwort liegt nur als Hash in der Datenbank (Tabelle settings).
 // Beim allerersten Aufruf (noch kein Passwort gespeichert) legt man das gemeinsame Passwort fest.

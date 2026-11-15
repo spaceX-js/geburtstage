@@ -1,7 +1,7 @@
 # Geburtstage
 
 Gemeinsame App für Jonas & Clara, die an die Geburtstage von Freunden und Familie erinnert – mit Geschenke-Planung als Zusatz.
-(Repo und Cloudflare-Worker heißen weiterhin „geschenke“.) Läuft kostenlos auf Cloudflare Workers mit einer D1-Datenbank.
+Läuft kostenlos auf Cloudflare Workers mit einer D1-Datenbank.
 Anmeldung mit einem gemeinsamen Passwort, das beim allerersten Aufruf festgelegt wird.
 
 ## Funktionen (v0.2)
