@@ -3,6 +3,7 @@
 // Das Passwort liegt nur als Hash in der Datenbank (Tabelle settings).
 // Beim allerersten Aufruf (noch kein Passwort gespeichert) legt man das gemeinsame Passwort fest.
 import { HOLIDAY_KEYS, todayIn } from "../public/occasions.js";
+import { askModel, promptFor, DAILY_LIMIT } from "./suggest.js";
 import { reminderConfig, checkDays, ensureVapid, deliver, runReminders, buildIcs, TZ } from "./notify.js";
 
 const COOKIE = "gs_session";
@@ -103,6 +104,28 @@ async function api(request, env, settings, url) {
     if (!ops.length) return json({ error: "Nichts zu ändern." }, 400);
     const res = await env.DB.batch([...ops, bumpRev(env)]);
     return json({ ok: true, rev: revOf(res[res.length - 1]), settings: settingsOut(await getSettings(env), env) });
+  }
+
+  // Geschenkvorschläge per KI
+  if (path === "/api/suggest" && method === "POST") {
+    if (!env.AI) return json({ error: "Die KI ist noch nicht eingerichtet." }, 503);
+    const b = await readJson(request);
+    if (!b || typeof b.person_id !== "string" || !ID_RE.test(b.person_id) || typeof b.occasion !== "string" || !OCC_RE.test(b.occasion)) return json({ error: "Ungültige Anfrage." }, 400);
+    const year = intOrNull(b.year, 1950, thisYear() + 2);
+    if (!year) return json({ error: "Ungültiges Jahr." }, 400);
+    const day = todayIn(TZ);
+    const [d0, n0] = String(settings.ai_day || "").split("|");
+    const used = d0 === day ? Number(n0) || 0 : 0;
+    if (used >= DAILY_LIMIT) return json({ error: "Für heute sind genug Vorschläge abgerufen – morgen geht es weiter." }, 429);
+    const prompt = promptFor(await loadState(env), b.person_id, b.occasion, year, b.wish);
+    if (!prompt) return json({ error: "Person nicht gefunden." }, 404);
+    await setSetting(env, "ai_day", day + "|" + (used + 1)).run();
+    try {
+      const r = await askModel(env.AI, prompt);
+      return json({ ok: true, suggestions: r.suggestions });
+    } catch (e) {
+      return json({ error: "Die KI hat gerade keine Vorschläge geliefert. Bitte gleich nochmal versuchen." }, 502);
+    }
   }
 
   if (path === "/api/calendar" && method === "GET") {

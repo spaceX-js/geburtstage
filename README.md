@@ -4,7 +4,7 @@ Gemeinsame App für Jonas & Clara, die an die Geburtstage von Freunden und Famil
 Läuft kostenlos auf Cloudflare Workers mit einer D1-Datenbank.
 Anmeldung mit einem gemeinsamen Passwort, das beim allerersten Aufruf festgelegt wird.
 
-## Funktionen (v0.4)
+## Funktionen (v0.5)
 
 - **Demnächst**: Geburtstage und eigene Termine (Hochzeitstag …) der nächsten 12 Monate, „Heute“ hervorgehoben, Alter und runde Geburtstage
 - **Kalender**: Monatsansicht (Raster Mo–So mit Namen, Tag antippen zeigt die Einträge) und Jahresübersicht (12 Mini-Monate, Monat antippen öffnet ihn)
@@ -23,9 +23,14 @@ Anmeldung mit einem gemeinsamen Passwort, das beim allerersten Aufruf festgelegt
   - An den eigenen Geburtstag wird man nicht erinnert.
 - **🎁 Geschenke** (Zusatz): Übersicht aller Anlässe inkl. Feiertage mit Stand (Idee → Gekauft → Verpackt → Überreicht oder „Diesmal nichts“),
   **Budget je Anlass** (Geburtstag, Weihnachten, Hochzeitstag … – gilt jedes Jahr), Ideen-Notizbuch, frühere Geschenke mit Bewertung, Interessen, Notizen
+- **✨ Geschenkvorschläge per KI** (im Anlass-Dialog): Cloudflare Workers AI (`@cf/google/gemma-4-26b-a4b-it`, Ersatz: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`)
+  schlägt 5 Ideen vor – aus Interessen, Notizen, Ideen-Notizbuch, früheren Geschenken (mit Bewertung) und dem Budget für den Anlass; optional mit Wunsch („eher ein Erlebnis“).
+  Ein Vorschlag kann direkt als Geschenk übernommen oder ins Notizbuch gemerkt werden. Kostenloses Tageskontingent; Begrenzung auf 60 Anfragen pro Tag (`settings.ai_day`).
+- **Ausgaben** (Geschenke → Ausgaben): je Jahr ausgegeben (gekauft/verpackt/überreicht) und noch geplant, pro Person, pro Anlass, „über Budget“, Vergleich der letzten 5 Jahre.
+  Geschenke für einen selbst zählen nicht mit (geheim).
 - Der 29. Februar wird in normalen Jahren am 28. angezeigt
 
-Geplant: Geschenkvorschläge mit Cloudflare Workers AI · evtl. E-Mail für Geschenkideen · Import aus Kontakten
+Geplant: Import aus Kontakten · evtl. E-Mail für Geschenkideen
 
 ## Aufbau
 
@@ -33,6 +38,7 @@ Geplant: Geschenkvorschläge mit Cloudflare Workers AI · evtl. E-Mail für Gesc
 |---|---|
 | `src/index.js` | Worker: Anmeldung, API (`/api/state`, `/api/person`, `/api/idea`, `/api/gift`, jeweils `/delete`, `/api/settings`, `/api/push/…`, `/api/calendar`, `/api/password`), Kalender-Abo |
 | `src/notify.js` | Erinnerungen: welche fällig sind (je Empfänger), stündlicher Lauf, Push, iCal |
+| `src/suggest.js` | Geschenkvorschläge: Prompt, Aufruf von Workers AI, Antwort auslesen |
 | `src/push.js` | Web Push ohne Fremddienst (VAPID, RFC 8291/8292) |
 | `public/sw.js` | Service Worker: zeigt Push-Nachrichten an |
 | `public/occasions.js` | Datumsberechnung (Ostern, Muttertag, Alter, nächste Anlässe) – von Oberfläche und Worker genutzt |

@@ -21,5 +21,8 @@
   // stündlich: fällige Geburtstags-Erinnerungen verschicken (ab der eingestellten Uhrzeit, deutsche Zeit)
   "triggers": { "crons": ["0 * * * *"] },
 
+  // Cloudflare Workers AI für Geschenkvorschläge (kostenloses Tageskontingent)
+  "ai": { "binding": "AI" },
+
   "observability": { "enabled": true }
 }

@@ -2,7 +2,7 @@
 // Zeigt die nächsten Geburtstage, alle Personen und (als Zusatz) Geschenk-Ideen und -Historie; speichert alles über /api/… in der Datenbank.
 import * as O from "/occasions.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const CACHE_KEY = "geschenke.v1";
 const POLL_MS = 5000;
 const STATUS = [
@@ -326,6 +326,61 @@ function calRow(o) {
     '</div><div class="d">' + what + " · " + O.fmtIn(o.inDays) + giftMark(o) + '</div></div><span class="chev">›</span></button>';
 }
 
+// Ausgaben: was wir pro Jahr, Person und Anlass für Geschenke ausgeben (Geschenke für mich selbst zählen nicht mit – geheim)
+const SPENT = ["gekauft", "verpackt", "ueberreicht"];
+function renderSpending() {
+  if (!S.spendYear) S.spendYear = thisYear();
+  const y = S.spendYear;
+  const visible = S.gifts.filter(g => !isSecret(g.person_id) && g.status !== "nichts");
+  const inYear = visible.filter(g => g.year === y);
+  const spent = inYear.filter(g => SPENT.includes(g.status)), planned = inYear.filter(g => g.status === "idee");
+  const sum = list => list.reduce((a, g) => a + (g.price || 0), 0);
+  const noPrice = inYear.filter(g => g.price == null).length;
+  let h = '<div class="calnav"><button class="iconbtn" data-act="spend-prev" aria-label="Voriges Jahr">‹</button><span class="calttl">' + y +
+    '</span><button class="iconbtn" data-act="spend-next" aria-label="Nächstes Jahr">›</button></div>';
+  h += '<div class="stats"><div><small>Ausgegeben</small><b>' + euroFmt(sum(spent)) + "</b><span>" + spent.length + (spent.length === 1 ? " Geschenk" : " Geschenke") + "</span></div>" +
+    "<div><small>Noch geplant</small><b>" + euroFmt(sum(planned)) + "</b><span>" + planned.length + (planned.length === 1 ? " Idee" : " Ideen") + "</span></div></div>";
+  if (noPrice) h += '<div class="small" style="margin:8px 4px 0">' + noPrice + (noPrice === 1 ? " Geschenk ist" : " Geschenke sind") + " ohne Preis eingetragen und fehlen in der Summe.</div>";
+  if (myPid()) h += '<div class="small" style="margin:4px 4px 0">🤫 Geschenke für dich sind nicht mitgezählt.</div>';
+  if (!inYear.length) {
+    h += '<div class="empty">' + y + " sind noch keine Geschenke eingetragen.</div>";
+  } else {
+    // pro Person
+    const byP = new Map();
+    for (const g of inYear) { const e = byP.get(g.person_id) || { spent: 0, planned: 0, n: 0 }; if (SPENT.includes(g.status)) e.spent += g.price || 0; else e.planned += g.price || 0; e.n++; byP.set(g.person_id, e); }
+    const rows = [...byP.entries()].map(([pid, e]) => ({ p: person(pid), ...e })).filter(r => r.p).sort((a, b) => (b.spent + b.planned) - (a.spent + a.planned));
+    const max = Math.max(1, ...rows.map(r => r.spent + r.planned));
+    h += '<div class="sec"><b>Pro Person</b></div><div class="list">' + rows.map(r =>
+      '<button class="row" data-act="person" data-pid="' + esc(r.p.id) + '"><div class="main"><div class="n">' + esc(r.p.name) + '</div>' +
+      '<div class="bar"><i style="width:' + (r.spent / max * 100).toFixed(1) + '%"></i><i class="pl" style="width:' + (r.planned / max * 100).toFixed(1) + '%"></i></div>' +
+      '<div class="d">' + euroFmt(r.spent) + (r.planned ? " · geplant " + euroFmt(r.planned) : "") + " · " + r.n + (r.n === 1 ? " Geschenk" : " Geschenke") + '</div></div><span class="chev">›</span></button>').join("") + "</div>";
+    // pro Anlass
+    const byO = new Map();
+    for (const g of inYear) { const k = g.occasion.startsWith("x:") ? occLabel(person(g.person_id), g.occasion) : occLabel(null, g.occasion); byO.set(k, (byO.get(k) || 0) + (g.price || 0)); }
+    h += '<div class="sec"><b>Pro Anlass</b></div><div class="card">' + [...byO.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => '<div class="kv"><span>' + esc(k) + "</span><b>" + euroFmt(v) + "</b></div>").join("") + "</div>";
+    // Budget überschritten?
+    const over = [];
+    const groups = new Map();
+    for (const g of inYear) { const k = g.person_id + "|" + g.occasion; groups.set(k, (groups.get(k) || 0) + (g.price || 0)); }
+    for (const [k, v] of groups) {
+      const [pid, occ] = [k.slice(0, k.indexOf("|")), k.slice(k.indexOf("|") + 1)];
+      const p = person(pid), b = p && p.budgets && p.budgets[occ];
+      if (b && b.max != null && v > b.max) over.push('<div class="kv"><span>' + esc(p.name) + " · " + esc(occLabel(p, occ)) + "</span><b>" + euroFmt(v) + ' <small class="small">(Budget ' + b.max + " €)</small></b></div>");
+    }
+    if (over.length) h += '<div class="sec"><b>Über Budget</b></div><div class="card">' + over.join("") + "</div>";
+  }
+  // Jahresvergleich
+  const years = [];
+  for (let k = y - 4; k <= y; k++) years.push([k, sum(visible.filter(g => g.year === k && SPENT.includes(g.status)))]);
+  if (years.some(([, v]) => v > 0)) {
+    const mx = Math.max(1, ...years.map(([, v]) => v));
+    h += '<div class="sec"><b>Jahresvergleich (ausgegeben)</b></div><div class="card yearbars">' + years.map(([k, v]) =>
+      '<button data-act="spend-year" data-y="' + k + '" class="' + (k === y ? "on" : "") + '"><span class="yv">' + (v ? euroFmt(v) : "–") + '</span><span class="yb"><i style="height:' + (v / mx * 100).toFixed(1) + '%"></i></span><span class="yl">' + k + "</span></button>").join("") + "</div>";
+  }
+  return h;
+}
+const euroFmt = n => (Math.round(n) || 0).toLocaleString("de-DE") + " €";
+
 // Alle: nach Geburtsmonat sortiert (Januar bis Dezember), Personen ohne Geburtstag am Ende
 function renderAll() {
   if (!S.persons.length) { $("app").innerHTML = emptyStart(); return; }
@@ -356,9 +411,12 @@ function renderAll() {
 // Geschenke: alle Anlässe inkl. Feiertage mit Stand der Geschenke
 function renderGifts() {
   if (!S.persons.length) { $("app").innerHTML = emptyStart(); return; }
+  const modeSeg = '<div class="seg" style="margin-top:12px"><button data-act="gmode" data-m="plan" class="' + (S.gmode !== "spend" ? "on" : "") + '">Planen</button>' +
+    '<button data-act="gmode" data-m="spend" class="' + (S.gmode === "spend" ? "on" : "") + '">Ausgaben</button></div>';
+  if (S.gmode === "spend") { $("app").innerHTML = modeSeg + renderSpending(); return; }
   const list = upcomingList();
   const open30 = list.filter(o => o.inDays <= 30 && stateOf(o.personId, o.key, o.year).key === "none").length;
-  let h = '<div class="small" style="margin:12px 4px 0">Hier plant ihr Geschenke – für Geburtstage und, wenn bei einer Person eingeschaltet, für Weihnachten & Co.</div>';
+  let h = modeSeg + '<div class="small" style="margin:12px 4px 0">Hier plant ihr Geschenke – für Geburtstage und, wenn bei einer Person eingeschaltet, für Weihnachten & Co.</div>';
   if (S.me) h += '<div class="seg" style="margin-top:12px"><button data-act="filter" data-f="alle" class="' + (S.filter !== "meine" ? "on" : "") + '">Alle</button>' +
     '<button data-act="filter" data-f="meine" class="' + (S.filter === "meine" ? "on" : "") + '">Kümmere ich mich (' + esc(S.me) + ")</button></div>";
   if (open30) h += '<div class="alert">' + (open30 === 1 ? "1 Anlass" : open30 + " Anlässe") + " in den nächsten 30 Tagen ohne Geschenk.</div>";
@@ -628,6 +686,15 @@ function openOccasion(pid, key, year) {
       "</div>";
   }
   h += '<div class="acts" style="margin-top:4px"><button class="btn" id="o_add">+ Geschenk eintragen</button>' + (gs.length ? "" : '<button class="btn ghost" id="o_none">Diesmal nichts</button>') + "</div>";
+  // KI-Vorschläge
+  const sk = pid + "|" + key + "|" + year, sg = (S.sugg || {})[sk];
+  h += '<div class="aibox"><div class="flab">✨ Geschenkideen vorschlagen lassen</div>' +
+    '<div class="two"><input id="o_wish" maxlength="200" placeholder="Wunsch, z. B. „eher ein Erlebnis“" value="' + esc(sg ? sg.wish : "") + '"><button class="btn sm" id="o_ai">' + (sg ? "Neue Ideen" : "Vorschlagen") + "</button></div>" +
+    '<div class="small" style="margin-top:6px">Nutzt Interessen, Notizen, frühere Geschenke und das Budget. Kostenlos über Cloudflare.</div>' +
+    (sg ? '<div class="sugglist">' + sg.list.map((x, i) =>
+      '<div class="sugg"><div><b>' + esc(x.title) + "</b>" + (x.price != null ? ' <span class="small">ca. ' + x.price + " €</span>" : "") + (x.why ? '<div class="small">' + esc(x.why) + "</div>" : "") +
+      '</div><div class="sb"><button class="btn sm" data-sugg="' + i + '" data-to="gift">Nehmen</button><button class="btn ghost sm" data-sugg="' + i + '" data-to="idea">Merken</button></div></div>').join("") + "</div>" : "") +
+    "</div>";
   if (ideas.length) h += '<div class="flab" style="margin-top:18px">Aus dem Ideen-Notizbuch übernehmen</div><div class="picklist">' +
     ideas.map(i => '<button data-idea="' + esc(i.id) + '"><span>' + esc(i.text) + "</span><small>" + (i.price != null ? "ca. " + euro(i.price) : "übernehmen") + "</small></button>").join("") + "</div>";
   if (past.length) h += '<div class="flab" style="margin-top:18px">Früher geschenkt</div><div class="list">' + past.map(g =>
@@ -642,6 +709,12 @@ function openOccasion(pid, key, year) {
     else if (b.dataset.rate) { const g = S.gifts.find(x => x.id === b.dataset.gid); if (g) { const r = Number(b.dataset.rate); saveGift({ ...g, rating: g.rating === r ? 0 : r }); again(); } }
     else if (b.dataset.edit) openGiftForm(b.dataset.edit, null, again);
     else if (b.dataset.undoNothing) { deleteGift(b.dataset.undoNothing); again(); }
+    else if (b.dataset.sugg) {
+      const x = ((S.sugg || {})[sk] || { list: [] }).list[Number(b.dataset.sugg)]; if (!x) return;
+      if (b.dataset.to === "gift") { saveGift({ id: uid("g"), person_id: pid, occasion: key, year, title: x.title, price: x.price, status: "idee", rating: 0, note: x.why || "", who: defaultWho(p), created_at: nowIso() }); toast("Als Geschenk-Idee eingetragen"); }
+      else { saveIdea({ id: uid("i"), person_id: pid, text: x.title + (x.why ? " – " + x.why : ""), link: "", price: x.price, added_by: S.me, created_at: nowIso() }); toast("Im Ideen-Notizbuch gemerkt"); }
+      S.sugg[sk].list.splice(Number(b.dataset.sugg), 1); again();
+    }
     else if (b.dataset.idea) {
       const i = S.ideas.find(x => x.id === b.dataset.idea); if (!i) return;
       saveGift({ id: uid("g"), person_id: pid, occasion: key, year, title: i.text.slice(0, 160), price: i.price, status: "idee", rating: 0,
@@ -650,6 +723,15 @@ function openOccasion(pid, key, year) {
     }
   };
   $("o_add").onclick = () => openGiftForm(null, { person_id: pid, occasion: key, year }, again);
+  $("o_ai").onclick = async e => {
+    const btn = e.target, wish = $("o_wish").value.trim();
+    btn.disabled = true; btn.textContent = "Denkt nach …";
+    try {
+      const r = await api("POST", "/api/suggest", { person_id: pid, occasion: key, year, wish });
+      S.sugg = S.sugg || {}; S.sugg[sk] = { wish, list: r.suggestions || [] };
+      if ($("modal").innerHTML) again();
+    } catch (err) { toast(err.message); btn.disabled = false; btn.textContent = "Vorschlagen"; }
+  };
   $("o_bedit").onclick = () => { $("o_bform").style.display = ""; $("o_budget").style.display = "none"; $("o_bmax").focus(); };
   $("o_bsave").onclick = () => {
     const mn = numOrNull($("o_bmin").value), mx = numOrNull($("o_bmax").value);
@@ -895,6 +977,9 @@ document.addEventListener("click", e => {
     else if (a === "cal-day") { const d = Number(b.dataset.d); c.day = !d || c.day === d ? null : d; }
     renderBody();
   }
+  else if (a === "gmode") { S.gmode = b.dataset.m; renderBody(); }
+  else if (a === "spend-prev" || a === "spend-next") { S.spendYear = (S.spendYear || thisYear()) + (a === "spend-prev" ? -1 : 1); renderBody(); }
+  else if (a === "spend-year") { S.spendYear = Number(b.dataset.y); renderBody(); }
   else if (a === "filter") { S.filter = b.dataset.f; saveLocal(); renderBody(); renderHead(); }
   else if (a === "me") { setMe(b.dataset.p); render(); }
   else if (a === "menu") openMenu();

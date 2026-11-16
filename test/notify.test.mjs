@@ -192,3 +192,32 @@ test("Erinnerungs-Einstellung an der Person", async () => {
   const st = await (await get(env, ck, "/api/state")).json();
   assert.deepEqual(st.persons.map(p => p.remind), ["tag", ""]);
 });
+
+test("Geschenkvorschläge: Prompt, Antwort lesen, Ersatzmodell, Tageslimit", async () => {
+  const { parseSuggestions, buildPrompt } = await import("../src/suggest.js");
+  // verschiedene Antwortformen
+  assert.equal(parseSuggestions({ choices: [{ message: { content: '{"vorschlaege":[{"titel":"Kochkurs","warum":"Sie kocht gern.","preis":"79 €"}]}' } }] })[0].price, 79);
+  assert.equal(parseSuggestions({ response: { vorschlaege: [{ titel: "Buch", warum: "x", preis: 20 }] } })[0].title, "Buch");
+  assert.equal(parseSuggestions({ response: 'Hier: ```json\n[{"title":"Tee","why":"y","price":12}]\n```' })[0].title, "Tee");
+  assert.deepEqual(parseSuggestions({ response: "Leider nichts" }), []);
+  const pr = buildPrompt({ person: { name: "Anna Müller", relation: "Freundin", age: 30, interests: ["Kochen"], dislikes: "Kitsch", notes: "" },
+    occasionLabel: "Geburtstag", age: 30, budget: { min: 20, max: 50 }, gifts: [{ title: "Schal", year: 2025, rating: 3, status: "ueberreicht" }], ideas: [{ text: "Thai-Kochbuch" }], wish: "" });
+  assert.match(pr, /Budget: 20 bis 50 Euro/); assert.match(pr, /Schal \(2025, war ein Volltreffer\)/); assert.match(pr, /Thai-Kochbuch/); assert.match(pr, /Für: Anna/);
+
+  const calls = [];
+  const AI = { run: async (model, input) => { calls.push(model); if (model.includes("gemma")) throw new Error("überlastet");
+    return { response: { vorschlaege: [{ titel: "Wellness-Gutschein", warum: "Entspannung", preis: 60 }] } }; } };
+  const { env, ck } = await ready({ AI });
+  await post(env, ck, "/api/person", { id: "a", name: "Anna", bday_day: 3, bday_month: 12, bday_year: 1996, interests: ["Wellness"], budgets: { geburtstag: { max: 80 } } });
+  let r = await post(env, ck, "/api/suggest", { person_id: "a", occasion: "geburtstag", year: 2026 });
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.equal(d.suggestions[0].title, "Wellness-Gutschein");
+  assert.deepEqual(calls, ["@cf/google/gemma-4-26b-a4b-it", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"]);
+  assert.equal((await post(env, ck, "/api/suggest", { person_id: "x", occasion: "geburtstag", year: 2026 })).status, 404);
+  env.DB.raw.prepare("UPDATE settings SET value = ? WHERE key = 'ai_day'").run(new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Berlin" }).format(new Date()) + "|60");
+  assert.equal((await post(env, ck, "/api/suggest", { person_id: "a", occasion: "geburtstag", year: 2026 })).status, 429);
+  // ohne KI-Bindung
+  const e2 = await ready();
+  assert.equal((await post(e2.env, e2.ck, "/api/suggest", { person_id: "a", occasion: "geburtstag", year: 2026 })).status, 503);
+});

@@ -193,6 +193,31 @@ details.more-sec[open]{padding-bottom:4px}
 .mgrid i{font-style:normal;font-size:9px;text-align:center;line-height:15px;color:var(--mute);border-radius:50%;font-variant-numeric:tabular-nums}
 .mgrid i.ev{background:var(--acc);color:var(--acc-ink);font-weight:700}
 .mgrid i.now{outline:1.5px solid var(--ink)}
+/* KI-Vorschläge */
+.aibox{border:1px dashed var(--acc);border-radius:14px;padding:12px;margin-top:16px;background:color-mix(in srgb,var(--acc-soft) 45%,transparent)}
+.aibox input{background:var(--card)}
+.sugglist{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.sugg{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.sugg b{font-size:15px}
+.sugg .sb{display:flex;gap:6px}
+.sugg .sb .btn{flex:1}
+/* Ausgaben */
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stats div{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+.stats small{display:block;color:var(--mute);font-size:13px}
+.stats b{display:block;font-size:24px;letter-spacing:-.02em;margin:2px 0}
+.stats span{font-size:13px;color:var(--mute)}
+.bar{display:flex;height:6px;border-radius:3px;background:var(--bg);overflow:hidden;margin:6px 0 4px}
+.bar i{display:block;background:var(--acc)}
+.bar i.pl{background:var(--warn);opacity:.55}
+.yearbars{display:flex;gap:6px;align-items:flex-end}
+.yearbars button{flex:1;border:0;background:none;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;padding:0;color:var(--mute)}
+.yearbars .yb{height:90px;width:100%;max-width:38px;display:flex;align-items:flex-end;background:var(--bg);border-radius:8px;overflow:hidden}
+.yearbars .yb i{display:block;width:100%;background:var(--acc);opacity:.45;border-radius:8px 8px 0 0}
+.yearbars button.on .yb i{opacity:1}
+.yearbars button.on{color:var(--ink);font-weight:700}
+.yearbars .yv{font-size:11px;white-space:nowrap}
+.yearbars .yl{font-size:12.5px}
 label.check{display:flex;gap:10px;align-items:flex-start;font-size:14.5px;margin-top:12px;cursor:pointer}
 .sheet label.check input{width:20px;height:20px;flex:none;margin:1px 0 0;-webkit-appearance:checkbox;appearance:auto;accent-color:var(--acc)}
 .toast button{background:none;border:0;color:var(--acc-soft);font-weight:700;padding:6px 8px;cursor:pointer}
