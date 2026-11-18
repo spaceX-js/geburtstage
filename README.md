@@ -7,7 +7,7 @@ Anmeldung mit einem gemeinsamen Passwort, das beim allerersten Aufruf festgelegt
 ## Funktionen (v0.5)
 
 - **Demnächst**: Geburtstage und eigene Termine (Hochzeitstag …) der nächsten 12 Monate, „Heute“ hervorgehoben, Alter und runde Geburtstage
-- **Kalender**: Monatsansicht (Raster Mo–So mit Namen, Tag antippen zeigt die Einträge) und Jahresübersicht (12 Mini-Monate, Monat antippen öffnet ihn)
+- **Kalender**: Monatsansicht (Raster Mo–So mit Namen, Tag antippen zeigt die Einträge) und Jahresübersicht (12 Mini-Monate, Monat antippen öffnet ihn); Feiertage (Weihnachten, Nikolaus, Ostern, Valentinstag, Muttertag, Vatertag) immer gelb eingetragen
 - **Alle**: alle Personen nach Geburtsmonat, mit Suche; Personen ohne Datum am Ende
 - **Erinnerungen** per **Push-Nachricht** (Einstellungen → Zahnrad):
   - Vorlauf frei wählbar (am Tag selbst, 1, 3, 7, 14, 15, 30, 60 Tage), Uhrzeit wählbar (Standard 9 Uhr, deutsche Zeit)

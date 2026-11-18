@@ -2,7 +2,7 @@
 // Zeigt die nächsten Geburtstage, alle Personen und (als Zusatz) Geschenk-Ideen und -Historie; speichert alles über /api/… in der Datenbank.
 import * as O from "/occasions.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const CACHE_KEY = "geschenke.v1";
 const POLL_MS = 5000;
 const STATUS = [
@@ -261,9 +261,12 @@ function calYear(y) {
   const t = today();
   const list = [];
   for (const p of S.persons) for (const o of O.occasionsInYear(p, y)) if (birthdayOcc(o)) list.push({ ...o, personId: p.id, inDays: O.daysBetween(t, o.date) });
-  list.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.label.localeCompare(b.label));
+  // Feiertage (für alle, unabhängig von Personen)
+  for (const h of O.HOLIDAYS) { const date = O.holidayDate(h.key, y); list.push({ key: h.key, label: h.label, date, year: y, holiday: true, age: null, round: false, inDays: O.daysBetween(t, date) }); }
+  list.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.holiday ? -1 : 0) - (b.holiday ? -1 : 0) || a.label.localeCompare(b.label));
   return O.mergeCouple(list, S.persons);
 }
+const HOL_ICON = { weihnachten: "🎄", nikolaus: "🎅", ostern: "🐣", valentinstag: "❤️", muttertag: "💐", vatertag: "👔" };
 function calState() {
   if (!S.cal) { const { y, m } = O.parseIso(today()); S.cal = { mode: "month", y, m, day: null }; }
   return S.cal;
@@ -280,15 +283,16 @@ function renderCalendar() {
     h += head(String(c.y), "cal-today");
     h += '<div class="yeargrid">';
     for (let m = 1; m <= 12; m++) {
-      const mi = items.filter(o => O.parseIso(o.date).m === m);
+      const mi = items.filter(o => O.parseIso(o.date).m === m && !o.holiday);
       const days = new Set(mi.map(o => O.parseIso(o.date).d));
+      const hol = new Set(items.filter(o => o.holiday && O.parseIso(o.date).m === m).map(o => O.parseIso(o.date).d));
       h += '<button class="mini" data-act="cal-month" data-m="' + m + '"><b>' + O.MONTHS[m - 1] + (mi.length ? ' <span class="cnt">' + mi.length + "</span>" : "") + "</b>" + gridHtml(c.y, m, d => {
         const iso = O.iso(c.y, m, d);
-        return '<i class="' + (days.has(d) ? "ev" : "") + (iso === t ? " now" : "") + '">' + d + "</i>";
+        return '<i class="' + (days.has(d) ? "ev" : hol.has(d) ? "hol" : "") + (iso === t ? " now" : "") + '">' + d + "</i>";
       }, true) + "</button>";
     }
     h += "</div>";
-    if (!items.length) h += '<div class="empty">In diesem Jahr ist nichts eingetragen.</div>';
+    h += '<div class="legend"><span><i class="ev"></i>Geburtstag & Termine</span><span><i class="hol"></i>Feiertag</span></div>';
     $("app").innerHTML = h;
     return;
   }
@@ -299,14 +303,16 @@ function renderCalendar() {
   h += head(O.MONTHS[c.m - 1] + " " + c.y, "cal-today");
   h += '<div class="month">' + gridHtml(c.y, c.m, d => {
     const iso = O.iso(c.y, c.m, d), ev = byDay.get(d) || [];
-    const cls = [ev.length ? "ev" : "", iso === t ? "now" : "", c.day === d ? "sel" : ""].filter(Boolean).join(" ");
+    const people = ev.filter(o => !o.holiday);
+    const cls = [people.length ? "ev" : ev.length ? "hol" : "", iso === t ? "now" : "", c.day === d ? "sel" : ""].filter(Boolean).join(" ");
     return '<button class="' + cls + '" data-act="cal-day" data-d="' + d + '"><span class="dn">' + d + "</span>" +
-      ev.slice(0, 2).map(o => '<span class="who">' + (o.key === "geburtstag" ? "" : o.couple ? "💍" : "⭐") + esc(o.couple ? "Ihr" : firstName(calName(o))) + "</span>").join("") +
+      ev.slice(0, 2).map(o => o.holiday ? '<span class="who holw">' + HOL_ICON[o.key] + esc(o.label.length > 8 ? o.label.slice(0, 7) + "." : o.label) + "</span>"
+        : '<span class="who">' + (o.key === "geburtstag" ? "" : o.couple ? "💍" : "⭐") + esc(o.couple ? "Ihr" : firstName(calName(o))) + "</span>").join("") +
       (ev.length > 2 ? '<span class="who more">+' + (ev.length - 2) + "</span>" : "") + "</button>";
   }, false) + "</div>";
   const shown = c.day ? (byDay.get(c.day) || []) : mi;
   h += '<div class="sec"><b>' + (c.day ? c.day + ". " + O.MONTHS[c.m - 1] : "Im " + O.MONTHS[c.m - 1]) + "</b>" + (c.day ? '<button class="linkbtn" data-act="cal-day" data-d="0">Ganzer Monat</button>' : "") + "</div>";
-  h += shown.length ? '<div class="list">' + shown.map(calRow).join("") + "</div>" : '<div class="card small">' + (c.day ? "An diesem Tag ist nichts eingetragen." : "In diesem Monat hat niemand Geburtstag.") + "</div>";
+  h += shown.length ? '<div class="list">' + shown.map(calRow).join("") + "</div>" : '<div class="card small">' + (c.day ? "An diesem Tag ist nichts eingetragen." : "In diesem Monat steht nichts an.") + "</div>";
   $("app").innerHTML = h;
 }
 // Monatsraster (Montag zuerst); cell(d) liefert das HTML für einen Tag
@@ -319,6 +325,13 @@ function gridHtml(y, m, cell, mini) {
 }
 function calRow(o) {
   const { d } = O.parseIso(o.date);
+  if (o.holiday) {
+    // Feiertag: wer bekommt an diesem Tag ein Geschenk? (ohne die eigene Person – geheim)
+    const ps = S.persons.filter(p => (p.holidays || []).includes(o.key) && !isSecret(p.id));
+    return '<button class="row" data-act="view" data-v="gifts"><div class="date hold"><b>' + d + "</b><small>" + O.WEEKDAYS[O.weekday(o.date)] + "</small></div>" +
+      '<div class="main"><div class="n">' + HOL_ICON[o.key] + " " + esc(o.label) + '</div><div class="d">Feiertag · ' + O.fmtIn(o.inDays) +
+      (ps.length ? " · Geschenke für " + esc(ps.map(p => p.name.split(" ")[0]).join(", ")) : "") + '</div></div><span class="chev">›</span></button>';
+  }
   const what = o.key === "geburtstag" ? (o.age ? (o.inDays < 0 ? "wurde " : "wird ") + o.age : "Geburtstag") : esc(O.occTitle(o));
   return '<button class="row" data-act="person" data-pid="' + esc(rowTarget(o)) + '">' +
     '<div class="date' + (o.inDays === 0 ? " soon" : "") + '"><b>' + d + "</b><small>" + O.WEEKDAYS[O.weekday(o.date)] + "</small></div>" +
