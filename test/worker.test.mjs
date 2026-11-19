@@ -65,6 +65,8 @@ test("ohne Anmeldung keine Daten", async () => {
   assert.equal((await call(env, "/app.js")).status, 302);
   assert.equal((await call(env, "/occasions.js")).status, 302);
   assert.equal((await call(env, "/icon.png")).status, 200);
+  assert.equal((await call(env, "/apple-touch-icon.png")).status, 200);
+  assert.equal((await call(env, "/manifest.webmanifest")).status, 200);
 });
 
 test("Person, Idee und Geschenk anlegen, ändern, löschen", async () => {

@@ -13,6 +13,8 @@ const OCC_RE = /^(geburtstag|weihnachten|nikolaus|ostern|valentinstag|muttertag|
 const STATUS = ["idee", "gekauft", "verpackt", "ueberreicht", "nichts"];
 const PEOPLE_DEFAULT = ["Jonas", "Clara"];
 const REMIND = ["", "tag", "aus"];
+// ohne Anmeldung erreichbar, damit das Handy das App-Icon laden kann
+const PUBLIC_FILES = ["/icon.png", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/favicon.ico", "/manifest.webmanifest"];
 
 export default {
   async fetch(request, env, ctx) {
@@ -22,7 +24,7 @@ export default {
       const path = url.pathname;
 
       // Öffentlich: Icon und Manifest (für „Zum Home-Bildschirm“) und Service Worker (für Push-Nachrichten)
-      if (path === "/icon.png" || path === "/icon-512.png" || path === "/manifest.webmanifest") return env.ASSETS.fetch(request);
+      if (PUBLIC_FILES.includes(path)) return withHeaders(await env.ASSETS.fetch(request), { "Cache-Control": "public, max-age=86400" });
       if (path === "/sw.js") return withHeaders(await env.ASSETS.fetch(request), { "Cache-Control": "no-cache", "Service-Worker-Allowed": "/" });
 
       const settings = await getSettings(env);
@@ -452,7 +454,7 @@ function loginPage(fehler, first) {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Geburtstage"><meta name="robots" content="noindex, nofollow">
-<link rel="apple-touch-icon" href="/icon.png"><link rel="icon" href="/icon.png"><link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?v=3"><link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=3"><link rel="manifest" href="/manifest.webmanifest?v=3">
 <title>Geburtstage – Anmelden</title>
 <style>
 :root{--bg:#f4f0ec;--card:#fff;--ink:#1f1b18;--mute:#72675f;--line:#e8e0d8;--acc:#b4493a;--acc-ink:#fff;--bad:#b3261e}
