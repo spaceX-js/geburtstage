@@ -1,8 +1,8 @@
 {
   "name": "Geburtstage",
   "short_name": "Geburtstage",
-  "id": "/",
-  "start_url": "/",
+  "id": "/?app=geburtstage-3",
+  "start_url": "/?app=geburtstage-3",
   "scope": "/",
   "display": "standalone",
   "background_color": "#f4f0ec",
